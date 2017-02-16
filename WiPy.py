@@ -13,7 +13,7 @@ from matplotlib import colors
 import time
 import shutil
 
-__version__ = '0.4.1'
+__version__ = '0.4.2'
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 
@@ -4372,6 +4372,9 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
 
 
     condList = get_condition_list(sourceRoot,sessID,runList)
+    #GET INTERPOLATION TIME
+    newStartT,newEndT=get_interp_extremes(sourceRoot,sessID,runList,stimFreq)
+    newTimes=np.arange(1.0/frameRate,newEndT,1.0/frameRate)#always use the same time points
 
     for runCount,run in enumerate(runList):
         print('run='+str(run))
@@ -4448,12 +4451,7 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
         #INTERPOLATE FOR CONSTANT FRAME RATE
         if interp:
             print('Interpolating....')
-            #CREATE INTRPOLATE OBJECTS
-            interpF = interpolate.interp1d(frameTimes, frameArray,1)
-            #SPECIFY INTERPOLATION TIMES
-            newTimes=np.arange(frameTimes[0],frameTimes[-1],1.0/frameRate)
-            #PERFORM INTERPOLATION
-            frameArray=interpF(newTimes)   # use interpolation function returned by `interp1d`
+            frameArray=interpolate_array(frameTimes,frameArray,newTimes)
             frameTimes=newTimes
 
         # REMOVE ROLLING AVERAGE
@@ -4478,7 +4476,7 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
 
         #AVERAGE FRAMES
         if averageFrames is not None:
-            print('Removing rolling mean....')
+            print('Pooling frames...')
             smoothFrameArray=np.zeros(np.shape(frameArray))
             rollingWindowSz=averageFrames
 
@@ -4515,7 +4513,7 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
         phaseData=phaseData[:,np.round(signalLength/2)+1:]#excluding DC offset
 
 
-        freqIdx=np.where(freqs>=stimFreq)[0][0]
+        freqIdx=np.argmin(np.absolute(freqs-stimFreq))
         topFreqIdx=np.where(freqs>1)[0][0]
 
         #OUTPUT TEXT FILE FREQUENCY CHANNEL ANALYZED
@@ -4552,7 +4550,9 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
 
             outFile = figOutDir+sessID+'_run'+str(run)+'_timecourse.png'
             fig=plt.figure()
-            plt.plot(frameTimes,frameArray[maxModIdx,])
+            print(frameTimes.shape)
+            print(frameArray.shape)
+            plt.plot(frameTimes,frameArray[maxModIdx,:])
             fig.suptitle(sessID+' run '+str(run)+' timecourse', fontsize=20)
             plt.xlabel('Time (s)',fontsize=16)
             plt.ylabel('Pixel Value',fontsize=16)
@@ -4599,7 +4599,7 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
             #load surface for overlay
             #READ IN SURFACE
             imFile=anatSource+'frame0_registered.tiff'
-            if not os.path.isfile(inFile):
+            if not os.path.isfile(imFile):
                 imFile=anatSource+'frame0.tiff'
 
             imSurf=cv2.imread(imFile,-1)
@@ -5286,11 +5286,11 @@ def combine_phase_conditions(sourceRoot,analysisDir,sessID,motionCorrection=Fals
 
             #plot
             if smooth_fwhm is None:
-                outFile = '%s_%s_absPhaseMap_mask_%s_overlay.png'%\
-                    (figOutDir+sessID,condPairLabels[pairCounter],mask)
+                outFile = '%s_%s_absPhaseMap_overlay.png'%\
+                    (figOutDir+sessID,condPairLabels[pairCounter])
             else:
-                outFile = '%s_%s_fwhm_%s_absPhaseMap_mask_%s_overlay.png'%\
-                    (figOutDir+sessID,condPairLabels[pairCounter],str(smooth_fwhm),mask)
+                outFile = '%s_%s_fwhm_%s_absPhaseMap_overlay.png'%\
+                    (figOutDir+sessID,condPairLabels[pairCounter],str(smooth_fwhm))
 
             fig=plt.figure()
             plt.imshow(imSurf, 'gray')
@@ -5446,28 +5446,38 @@ def get_analysis_path_timecourse(analysisRoot,  interp=False, removeRollingMean=
 
     return timecourseDir
 
-def get_interp_extremes(sourceRoot,sessID,runList):
-    #MAKE SURE YOU GET SOME ARGUMENTS
-    if sourceRoot is None:
-        raise TypeError("sourceRoot (directory) not specified!")
-    if sessID is None:
-        raise TypeError("sessID not specified!")
-    if runList is None:
-        raise TypeError("runList not specified!")
+def get_interp_extremes(sourceRoot,sessID,runList,stimFreq):
 
-    tStartList=np.zeros(len(runList))
-    tEndList=np.zeros(len(runList))
-    for idx,run in enumerate(runList):
-        #DEFINE DIRECTORIES
-        runFolder=glob.glob(sourceRoot+sessID+'_run'+str(run)+'_*')
-        frameFolder=runFolder[0]+"/frames/"
-        planFolder=runFolder[0]+"/plan/"
-        frameTimes,frameCond,frameCount = get_frame_times(planFolder)
-        tStartList[idx]=frameTimes[0]
-        tEndList[idx]=frameTimes[-1]
-    tStartMax=np.max(tStartList)
-    tEndMin=np.min(tEndList)
-    return tStartMax, tEndMin
+    run=runList[0]
+    runFolder=glob.glob(sourceRoot+sessID+'_run'+str(run)+'_*')
+    frameFolder=runFolder[0]+"/frames/"
+    planFolder=runFolder[0]+"/plan/"
+    frameTimes,frameCond,frameCount = get_frame_times(planFolder)
+
+    tMin=0
+    nCycles=np.round(frameTimes[-1]/np.true_divide(1,stimFreq))
+    tMax=np.true_divide(1,stimFreq)*nCycles
+
+    return tMin,tMax
+
+def interpolate_array(t0,array0,tNew):
+    interpF = interpolate.interp1d(t0, array0,1)
+    
+    arrayNew=np.zeros((array0.shape[0],tNew.size))
+    if np.any(tNew<t0[0]):
+        arrayNew[:,tNew<t0[0]]=np.expand_dims(array0[:,0],1)
+        ind0=np.where(tNew<t0[0])[0][-1]+1
+    else:
+        ind0=0
+    if np.any(tNew>t0[-1]):
+        arrayNew[:,tNew>t0[-1]]=np.expand_dims(array0[:,-1],1)
+        ind1=np.where(tNew>t0[-1])[0][0]
+    else:
+        ind1=tNew.size
+
+    arrayNew[:,ind0:ind1]=interpF(tNew[ind0:ind1])
+    
+    return arrayNew
 
 def analyze_complete_timecourse(sourceRoot, targetRoot, sessID, runList, stimFreq, frameRate, \
                                interp=False, removeRollingMean=False, \
@@ -5511,7 +5521,7 @@ def analyze_complete_timecourse(sourceRoot, targetRoot, sessID, runList, stimFre
 
     condList = get_condition_list(sourceRoot,sessID,runList)
     #GET INTERPOLATION TIME
-    newStartT,newEndT=get_interp_extremes(sourceRoot,sessID,runList)
+    newStartT,newEndT=get_interp_extremes(sourceRoot,sessID,runList,stimFreq)
     newTimes=np.arange(newStartT,newEndT,1.0/frameRate)#always use the same time points
 
     for cond in np.unique(condList):
@@ -5585,8 +5595,7 @@ def analyze_complete_timecourse(sourceRoot, targetRoot, sessID, runList, stimFre
             #INTERPOLATE FOR CONSTANT FRAME RATE
             if interp:
                 print('Interpolating...')
-                interpF = interpolate.interp1d(frameTimes, frameArray,1)
-                frameArray=interpF(newTimes)   # use interpolation function returned by `interp1d`
+                newFrameArray=interpolate_array(frameTimes,frameArray,newTimes)
                 frameTimes=newTimes
 
 
@@ -5612,7 +5621,7 @@ def analyze_complete_timecourse(sourceRoot, targetRoot, sessID, runList, stimFre
 
                 #AVERAGE FRAMES
             if averageFrames is not None:
-                print('Removing rolling mean....')
+                print('Pooling frames values....')
                 smoothFrameArray=np.zeros(np.shape(frameArray))
                 rollingWindowSz=averageFrames
 
