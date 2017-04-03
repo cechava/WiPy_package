@@ -5,6 +5,7 @@ import glob
 import numpy as np
 import scipy
 from scipy import misc,interpolate,stats,signal
+import statsmodels.stats.multitest as mt
 import matplotlib
 #matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -13,7 +14,7 @@ from matplotlib import colors
 import time
 import shutil
 
-__version__ = '0.4.2'
+__version__ = '0.45'
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 
@@ -678,8 +679,11 @@ def perform_motion_registration(sourceRoot,targetRoot,sessID,runList,refRun=1,sa
             outFile=motionFileDir+sessID+'_run'+str(run)+'_correctedFrames'
             np.savez(outFile,correctedFrameArray=correctedFrameArray)
 
+        dummyArray=np.ones(frameArray.shape)*np.mean(frameArray[:])
+        correctedDummyArray=apply_motion_correction(dummyArray,warpMatrices)
+
         #GET MOTION CORRECTED BOUNDARIES
-        edgeUpList,edgeDownList,edgeLeftList,edgeRightList = get_motion_corrected_boundaries(correctedFrameArray,warpMatrices)
+        edgeUpList,edgeDownList,edgeLeftList,edgeRightList = get_motion_corrected_boundaries(correctedDummyArray,warpMatrices)
 
         if runCount==0:
             if runList[0] == refRun:
@@ -741,36 +745,43 @@ def get_analysis_path(analysisRoot,interp=False, removeRollingMean=False, \
     timecourseAnalysis=False, baseline_startT=-2, baseline_endT=0, timecourse_startT=0, timecourse_endT=8,\
      timeWindowAnalysis=False,tWindow1_startT=-2, tWindow1_endT=0, tWindow2_startT=0, tWindow2_endT=5):
 	#Cesar Echavarria 11/2016
-    
 
-    imgOperationDir=''
+    motionString=''
+    smoothString=''
+    interpString=''
+    averageString=''
+    removeRollingString=''
     #DEFINE DIRECTORIES
     if motionCorrection:
-    	imgOperationDir=imgOperationDir+'motionCorrection_'
-
-    if smoothing_fwhm is not False:
-    	imgOperationDir=imgOperationDir+'smoothing_fwhm'+str(smoothing_fwhm)
+        motionString='motionCorrection'
     else:
-    	imgOperationDir=imgOperationDir+'noSmoothing'
+        motionString='noMotionCorrection'
+
+    if smoothing_fwhm is not None:
+        smoothString='_smoothing_fwhm'+str(smoothing_fwhm)
+
+    imgOperationDir=motionString+smoothString
+
 
     procedureDir=''
-    if interpolate:
-        procedureDir=procedureDir+'interpolate'
+    if interp:
+        interpString='interpolate_'
+
 
     if removeRollingMean:
-        procedureDir=procedureDir+'_minusRollingMean'
+        removeRollingString='minusRollingMean'
 
-    generalProcessDir=imgOperationDir+'/'+procedureDir+'/'
+    procedureDir=interpString+removeRollingString
 
     tCourseDir=None
     tWindowDir=None
     if timeWindowAnalysis:
-        analysisDir=analysisRoot+'timeWindow/'+generalProcessDir
-        tWindowDir=analysisDir+'tWindow1_'+str(tWindow1_startT)+'_'+str(tWindow1_endT)+'_tWindow2_'+str(tWindow2_startT)+'_'+str(tWindow2_endT)+'/'
-
+        analysisDir='%stimeWindow/%s/%s/'%(analysisRoot,imgOperationDir,interpString+averageString+removeRollingString)
+        tWindowDir='%stWindow1_%s_%s_tWindow2_%s_%s/'%(analysisDir,tWindow1_startT,tWindow1_endT,tWindow2_startT,tWindow2_endT)
     if timecourseAnalysis:
-        analysisDir=analysisRoot+'timeCourse/'+generalProcessDir
-        tCourseDir=analysisDir+'baseline_'+str(baseline_startT)+'_'+str(baseline_endT)+'_response_'+str(timecourse_startT)+'_'+str(timecourse_endT)+'/'
+        analysisDir='%stimeCourse/%s/%s/'%(analysisRoot,imgOperationDir,interpString+averageString+removeRollingString)
+        tCourseDir='%sbaseline_%s_%s_response_%s_%s/'%(analysisDir,baseline_startT,baseline_endT,timecourse_startT,timecourse_endT)
+    
 
     return(tWindowDir,tCourseDir)
   
@@ -1084,7 +1095,7 @@ def analyze_blocked_data(sourceRoot, targetRoot, sessID, runList, frameRate,\
                     np.savez(outFile,baseline=baseline[:,startBlock:endBlock:])
             try:
                 outFile=tCourseOutDir+sessID+'_run'+str(run)+'_response'
-                np.savez(outFile,response=response,startBlock=startBlock,endBlock=endBlock,nParts=nParts)
+                np.savez(outFile,response=response)
             except IOError as e:
                 #if file is too big,save in parts
                 nParts=4
@@ -1370,7 +1381,7 @@ def average_trials_tWindow(sourceRoot, targetRoot, sessID, nCond, runList, analy
             print('run = '+str(run))
 
             inFile=inDir+sessID+'_run'+str(run)+'.npz'
-            if os.path.isFile(inFile):
+            if os.path.isfile(inFile):
                 f=np.load(inFile)
                 stimBlockCond=f['stimBlockCond']
                 baseResp=f['baseResp']
@@ -1479,13 +1490,16 @@ def average_trials_tWindow(sourceRoot, targetRoot, sessID, nCond, runList, analy
             for c in range(len(contrastDic)):
                 if contrastDic[c]['minus']==[0]:
                     PSCpix=np.mean(PSC[:,np.subtract(contrastDic[c]['plus'],1)],1)
+                    positiveBaselineMask=None
                 else:
-                    rectifyPSC=np.copy(PSC)
-                    rectifyPSC[PSC<0]=0
-                    PSCpix=np.mean(rectifyPSC[:,np.subtract(contrastDic[c]['plus'],1)],1)-np.mean(rectifyPSC[:,np.subtract(contrastDic[c]['minus'],1)],1)
+                    PSC_plus=np.mean(PSC[:,np.subtract(contrastDic[c]['plus'],1)],1)
+                    PSC_minus=np.mean(PSC[:,np.subtract(contrastDic[c]['minus'],1)],1)
+                    positiveBaselineMask=np.logical_or(PSC_plus>=0,PSC_minus>=0).reshape((szY,szX))
+
+                    PSCpix=PSC_plus-PSC_minus
                 PSCmap=np.reshape(PSCpix,(szY,szX))
                 outFile=outDir+sessID+'_'+contrastDic[c]['name']+'_PSCmap'
-                np.savez(outFile,PSCmap=PSCmap);
+                np.savez(outFile,PSCmap=PSCmap,positiveBaselineMask=positiveBaselineMask);
 
         if parametricStat:
             # SPM
@@ -1493,22 +1507,23 @@ def average_trials_tWindow(sourceRoot, targetRoot, sessID, nCond, runList, analy
                 if contrastDic[c]['minus']==[0]:
                     plusMat=np.mean(PSC_AllTrials[:,:,np.subtract(contrastDic[c]['plus'],1)],2)
                     minusMat=np.zeros(np.shape(plusMat))
+                    positiveBaselineMask=None
 
                 else:
                     PSC=np.mean(PSC_AllTrials*100,1)#average over trials
     
                     PSC_plus=np.mean(PSC[:,np.subtract(contrastDic[c]['plus'],1)],1)
                     plusMat=np.mean(PSC_AllTrials[:,:,np.subtract(contrastDic[c]['plus'],1)],2)
-                    plusMat[PSC_plus<0,:]=0
-                    
+
                     PSC_minus=np.mean(PSC[:,np.subtract(contrastDic[c]['minus'],1)],1)
                     minusMat=np.mean(PSC_AllTrials[:,:,np.subtract(contrastDic[c]['minus'],1)],2)
-                    minusMat[PSC_minus<0,:]=0
+                    positiveBaselineMask=np.logical_or(PSC_plus>=0,PSC_minus>=0).reshape((szY,szX))
+
                 tStatPix,pValPix=stats.ttest_rel(plusMat,minusMat,1)
                 tStatMap=np.reshape(tStatPix,(szY,szX))
                 pValMap=np.reshape(pValPix,(szY,szX))
                 outFile=outDir+sessID+'_'+contrastDic[c]['name']+'_SPMmap'
-                np.savez(outFile,tStatMap=tStatMap,pValMap=pValMap);
+                np.savez(outFile,tStatMap=tStatMap,pValMap=pValMap,positiveBaselineMask=positiveBaselineMask);
 
         if bootstrapStat:
             #Non-parametric stat
@@ -1883,6 +1898,7 @@ def make_movie_from_stack(rootDir,frameStack,frameRate=24,movFile='test.mp4'):
     szY,szX,nFrames=np.shape(frameStack)
 
 
+
     #MAKE TEMP FOLDER
     tmpDir=rootDir+'/tmp/'
     if not os.path.exists(tmpDir):
@@ -2116,7 +2132,10 @@ def generate_PSC_map(sourceRoot,sessID,analysisDir,avgFolder, motionCorrection=F
         mapFile=resultsDir+sessID+'_'+contrastDic[c]['name']+'_PSCmap.npz'
         f=np.load(mapFile)
         PSCmap=f['PSCmap']
+        positiveBaselineMask=f['positiveBaselineMask']
         PSCmap=np.nan_to_num(PSCmap)
+        if positiveBaselineMask is not None:
+            PSCmap[positiveBaselineMask==0]=0
 
         if motionCorrection:
             #LOAD MOTION CORRECTED BOUNDARIES
@@ -2291,9 +2310,13 @@ def generate_SPM(sourceRoot,sessID,analysisDir,avgFolder,motionCorrection=False,
         f=np.load(mapFile)
         pValMap=f['pValMap']
         tStatMap=f['tStatMap']
+        positiveBaselineMask=f['positiveBaselineMask']
+
 
         SPMmap=(-np.log10(pValMap))*np.sign(tStatMap)
         SPMmap=np.nan_to_num(SPMmap)
+        if positiveBaselineMask is not None:
+            SPMmap[positiveBaselineMask==0]=0
 
         if motionCorrection:
             #LOAD MOTION CORRECTED BOUNDARIES
@@ -2413,7 +2436,365 @@ def generate_SPM(sourceRoot,sessID,analysisDir,avgFolder,motionCorrection=False,
         misc.imsave(outFile,np.uint8(funcOverlay))
 
         plt.clf()
+        del funcOverlay,SPMmap
 
+
+def generate_FDR_map(sourceRoot,sessID,analysisDir,avgFolder, motionCorrection=False,\
+    mask = None):
+    # DEFINE DIRECTORIES
+
+    anatSource=sourceRoot+'Sessions/'+sessID+'/Surface/'
+    motionDir=sourceRoot+'/Sessions/'+sessID+'/Motion/';
+    motionFileDir=motionDir+'Registration/'
+    resultsDir=analysisDir+'/AnalysisOutput/'+avgFolder+'/'
+
+    fileOutDir=resultsDir
+    figOutDir=analysisDir+'/Figures/'+avgFolder+'/qValueMaps/'
+
+    if not os.path.exists(figOutDir):
+            os.makedirs(figOutDir) 
+
+    # READ IN SURFACE
+    imFile=anatSource+'frame0.tiff'
+    imSurf=cv2.imread(imFile,-1)
+    imSurf=np.true_divide(imSurf,2**12)*2**8;
+
+    funcOverlayTmp=np.dstack((imSurf,imSurf,imSurf))
+    szY,szX,nChannels=np.shape(funcOverlayTmp)
+
+
+    #LOAD IN DICTIONARY WITH CONTRAST DEFINITIONS
+    inFile=sourceRoot+'contrastDic.npz'
+    f=np.load(inFile)
+    contrastDic=f['contrastDic']
+
+    #GET MASK IF NECESSARY
+    if mask is not None:
+        maskFile=sourceRoot+'/Sessions/'+sessID+'/masks/Files/'+mask+'.npz'
+        f=np.load(maskFile)
+        maskM=f['maskM']
+    else:
+        maskM=None
+
+
+    for c in range(len(contrastDic)):
+
+        # LOAD IN MAP WITH PSC PER PIXEL
+        mapFile=resultsDir+sessID+'_'+contrastDic[c]['name']+'_SPMmap.npz'
+        f=np.load(mapFile)
+        pValMap=f['pValMap']
+        tStatMap=f['tStatMap']
+        positiveBaselineMask=f['positiveBaselineMask']
+
+
+        if motionCorrection:
+                #LOAD MOTION CORRECTED BOUNDARIES
+                inFile=motionFileDir+sessID+'_motionCorrectedBoundaries.npz'
+                f=np.load(inFile)
+                boundaries=f['boundaries']
+                padDown=int(boundaries[0])
+                padUp=int(szY-boundaries[1])
+                padLeft=int(boundaries[2])
+                padRight=int(szX-boundaries[3])
+                pValMap=np.pad(pValMap,((padDown,padUp),(padLeft,padRight)),'constant',constant_values=((0, 0),(0,0)))
+
+
+
+        #ADJUST P-VALUES
+        pValPix=pValMap[maskM>0].reshape(np.where(maskM>0)[1].size)
+        correctedOutput=mt.multipletests(pValPix,method='fdr_bh')
+        qValPix=correctedOutput[1]
+
+        #PUT Q-VALUES INTO MAP
+        FDRmap=np.zeros((szY,szX))
+        FDRmap[maskM>0]=qValPix
+
+        #SAVE VARIABLES TO FILE
+        outFile=fileOutDir+sessID+'_'+contrastDic[c]['name']+'_FDRmap.npz'
+        np.savez(outFile,FDRmap=FDRmap,maskM=maskM);
+
+        #VISUALIZE MAP
+        FDRmap=(-np.log10(FDRmap))
+        FDRmap[FDRmap==np.inf]=0
+
+
+        funcOverlay=np.copy(funcOverlayTmp)
+        #AUTOMATIC THRESHOLD 
+        pMin=.2
+        pMax=.8
+
+        threshMin=np.round(pMin*np.max(np.absolute(FDRmap)))
+
+        if threshMin<1.35:
+            threshMin=1.35
+        if threshMin>np.round(pMax*np.max(np.absolute(FDRmap))):
+            threshMax=np.ceil(threshMin)
+        else:
+            threshMax=np.round(pMax*np.max(np.absolute(FDRmap)))
+
+        threshList=np.linspace(threshMin,threshMax,8)
+
+        #DEFINE COLOR MAP
+        colorOverlayNeg=np.array([[0,0,.25],[0,0,.5],[0,0,.75],[0,0,1],[0,.25,1],[0,.5,1],[0,.75,1],[0,1,1]]);
+        colorOverlayPos=np.array([[.25,0,0],[.5,0,0],[.75,0,0],[1,0,0],[1,.25,0],[1,.5,0],[1,.75,0],[1,1,0]]);
+        cMap=np.vstack((np.flipud(colorOverlayNeg),np.array([.5,.5,.5]),colorOverlayPos))
+
+        imSat=0.5#SET SATURATION OF CLORS
+        #COOL COLORS
+        for t in range(len(threshList)-1):
+            colorInd=np.where(np.logical_and(FDRmap>-threshList[t+1],FDRmap<=-threshList[t]))
+            for channel in range(nChannels):
+                imTemp=funcOverlay[:,:,channel]
+                diffVal=np.subtract((np.ones((szY,szX))*colorOverlayNeg[t,channel]*((2**8)-1)),imTemp)
+                  #  imTemp[colorInd]=colorOverlayNeg[t,channel]*((2**8)-1)
+                imTemp[colorInd]=imTemp[colorInd]+np.multiply(diffVal[colorInd],imSat)
+                funcOverlay[:,:,channel]=np.copy(imTemp)
+
+        colorInd=FDRmap<=-threshList[t+1]
+        for channel in range(nChannels):
+            imTemp=funcOverlay[:,:,channel]
+            diffVal=np.subtract((np.ones((szY,szX))*colorOverlayNeg[t,channel]*((2**8)-1)),imTemp)
+            #imTemp[colorInd]=colorOverlayNeg[t,channel]*((2**8)-1)
+            imTemp[colorInd]=imTemp[colorInd]+np.multiply(diffVal[colorInd],imSat)
+            funcOverlay[:,:,channel]=imTemp[:,:]
+
+        ## WARM COLORS
+        for t in range(len(threshList)-1):
+            colorInd=np.logical_and(FDRmap<threshList[t+1],FDRmap>=threshList[t])
+            for channel in range(nChannels):
+                imTemp=funcOverlay[:,:,channel]
+                diffVal=np.subtract((np.ones((szY,szX))*colorOverlayPos[t,channel]*((2**8)-1)),imTemp)
+                imTemp[colorInd]=imTemp[colorInd]+np.multiply(diffVal[colorInd],imSat)
+                #  imTemp[colorInd]=colorOverlayPos[t,channel]*((2**8)-1)
+                funcOverlay[:,:,channel]=imTemp[:,:]
+
+        colorInd=FDRmap>=threshList[t+1]
+        for channel in range(nChannels):
+            imTemp=funcOverlay[:,:,channel]
+            diffVal=np.subtract((np.ones((szY,szX))*colorOverlayPos[t,channel]*((2**8)-1)),imTemp)
+            imTemp[colorInd]=imTemp[colorInd]+np.multiply(diffVal[colorInd],imSat)
+
+            #imTemp[colorInd]=colorOverlayPos[t,channel]*((2**8)-1)
+            funcOverlay[:,:,channel]=imTemp[:,:]    
+
+        #MAKE AND SAVE IMAGE WITH COLOR BAR
+        mycmap = array2cmap(cMap)
+        plt.imshow(np.uint8(funcOverlay),cmap=mycmap)
+        plt.axis('off')
+
+        nPos=np.shape(colorOverlayPos)[0]
+        nNeg=np.shape(colorOverlayNeg)[0]
+        nSteps=nPos+nNeg+1
+
+        t1Loc=np.true_divide(1,nSteps)
+        t2Loc=(np.true_divide(1,nSteps)*nPos)-np.true_divide(t1Loc,2)
+        t3Loc=t2Loc+(2*np.true_divide(1,nSteps))
+        t4Loc=1-np.true_divide(1,nSteps)
+        tickLoc=np.array([t1Loc,t2Loc,t3Loc,t4Loc])
+        tickLoc=tickLoc*np.max(np.uint8(funcOverlay))
+
+        t1Label=-np.max(threshList)
+        t2Label=-np.min(threshList)
+        t3Label=np.min(threshList)
+        t4Label=np.max(threshList)
+        tickLabels=np.around(np.array([t1Label,t2Label,t3Label,t4Label]),4)
+
+        cb = plt.colorbar()
+        cb.set_ticks(tickLoc)
+        cb.set_ticklabels(tickLabels)
+
+        if mask is None:
+            plt.savefig(figOutDir+sessID+'_'+contrastDic[c]['name']+'_withColorbar.png')
+            outFile=figOutDir+sessID+'_'+contrastDic[c]['name']+'_image.png'
+        else:
+            plt.savefig(figOutDir+sessID+'_'+contrastDic[c]['name']+'_mask_'+mask+'_withColorbar.png')
+            outFile=figOutDir+sessID+'_'+contrastDic[c]['name']+'_mask_'+mask+'_image.png'
+        misc.imsave(outFile,np.uint8(funcOverlay))
+
+        plt.clf()
+
+def generate_FDR_thresh_PSC_map(sourceRoot,sessID,analysisDir,avgFolder, motionCorrection=False,\
+    FDRthresh=.05,manualThresh = False, threshMin = 1, threshMax = 3, contrastName=None,mask = None):
+
+    # DEFINE DIRECTORIES
+
+    anatSource=sourceRoot+'Sessions/'+sessID+'/Surface/'
+    motionDir=sourceRoot+'/Sessions/'+sessID+'/Motion/';
+    motionFileDir=motionDir+'Registration/'
+    resultsDir=analysisDir+'/AnalysisOutput/'+avgFolder+'/'
+
+    fileOutDir=resultsDir
+    figOutDir=analysisDir+'/Figures/'+avgFolder+'/PSC_FDR_maps/'
+
+    if not os.path.exists(figOutDir):
+            os.makedirs(figOutDir) 
+
+    # READ IN SURFACE
+    imFile=anatSource+'frame0.tiff'
+    imSurf=cv2.imread(imFile,-1)
+    imSurf=np.true_divide(imSurf,2**12)*2**8;
+
+    funcOverlayTmp=np.dstack((imSurf,imSurf,imSurf))
+    szY,szX,nChannels=np.shape(funcOverlayTmp)
+
+
+    #LOAD IN DICTIONARY WITH CONTRAST DEFINITIONS
+    inFile=sourceRoot+'contrastDic.npz'
+    f=np.load(inFile)
+    contrastDic=f['contrastDic']
+
+    #GET MASK IF NECESSARY
+    if mask is not None:
+        maskFile=sourceRoot+'/Sessions/'+sessID+'/masks/Files/'+mask+'.npz'
+        f=np.load(maskFile)
+        maskM=f['maskM']
+    else:
+        maskM=None
+
+    if contrastName is not None:
+        c=0
+        while c < len(contrastDic):
+            if contrastDic[c]['name']==contrastName:
+                contrastDic=[contrastDic[c]]
+                break
+            c=c+1
+
+
+    for c in range(len(contrastDic)):
+
+        # LOAD IN MAP WITH PSC PER PIXEL
+        mapFile=resultsDir+sessID+'_'+contrastDic[c]['name']+'_PSCmap.npz'
+        f=np.load(mapFile)
+        PSCmap=f['PSCmap']
+        positiveBaselineMask=f['positiveBaselineMask']
+        PSCmap=np.nan_to_num(PSCmap)
+        if positiveBaselineMask is not None:
+            PSCmap[positiveBaselineMask==0]=0
+
+        mapFile=resultsDir+sessID+'_'+contrastDic[c]['name']+'_FDRmap.npz'
+        f=np.load(mapFile)
+        FDRmap=f['FDRmap']
+
+
+        if motionCorrection:
+                #LOAD MOTION CORRECTED BOUNDARIES
+                inFile=motionFileDir+sessID+'_motionCorrectedBoundaries.npz'
+                f=np.load(inFile)
+                boundaries=f['boundaries']
+                padDown=int(boundaries[0])
+                padUp=int(szY-boundaries[1])
+                padLeft=int(boundaries[2])
+                padRight=int(szX-boundaries[3])
+                PSCmap=np.pad(PSCmap,((padDown,padUp),(padLeft,padRight)),'constant',constant_values=((0, 0),(0,0)))
+
+        #MASK BASED ON FDR THRESHOLD
+        FDRmask=FDRmap<FDRthresh
+        PSCmap[FDRmask==0]=0
+
+        #APPLY MASK, IF INDICATED
+        if mask is not None:
+            PSCmap=PSCmap*maskM
+
+
+
+        funcOverlay=np.copy(funcOverlayTmp)
+
+        if not manualThresh:
+            pMin=.2
+            pMax=.8
+
+            threshMin=np.around(pMin*np.max(np.absolute(PSCmap)),2)
+            if threshMin>np.max(np.absolute(PSCmap)):
+                threshMax=threshMin
+            else:
+                threshMax=np.around(pMax*np.max(np.absolute(PSCmap)),2)
+        threshList=np.linspace(threshMin,threshMax,8);
+
+        #DEFINE COLOR MAP
+        colorOverlayNeg=np.array([[0,0,.25],[0,0,.5],[0,0,.75],[0,0,1],[0,.25,1],[0,.5,1],[0,.75,1],[0,1,1]]);
+        colorOverlayPos=np.array([[.25,0,0],[.5,0,0],[.75,0,0],[1,0,0],[1,.25,0],[1,.5,0],[1,.75,0],[1,1,0]]);
+        cMap=np.vstack((np.flipud(colorOverlayNeg),np.array([.5,.5,.5]),colorOverlayPos))
+
+        imSat=0.5#SET SATURATION OF CLORS
+         #COOL COLORS
+        for t in range(len(threshList)-1):
+            colorInd=np.where(np.logical_and(PSCmap>-threshList[t+1],PSCmap<=-threshList[t]))
+
+            for channel in range(nChannels):
+                imTemp=funcOverlay[:,:,channel]
+                diffVal=(np.ones((szY,szX))*colorOverlayNeg[t,channel]*((2**8)-1))-imTemp
+                  #  imTemp[colorInd]=colorOverlayNeg[t,channel]*((2**8)-1)
+                imTemp[colorInd]=imTemp[colorInd]+np.multiply(diffVal[colorInd],imSat)
+                funcOverlay[:,:,channel]=imTemp[:,:]
+
+        colorInd=PSCmap<-threshList[t+1]
+        for channel in range(nChannels):
+            imTemp=funcOverlay[:,:,channel]
+            diffVal=np.subtract((np.ones((szY,szX))*colorOverlayNeg[t,channel]*((2**8)-1)),imTemp)
+            #imTemp[colorInd]=colorOverlayNeg[t,channel]*((2**8)-1)
+            imTemp[colorInd]=imTemp[colorInd]+np.multiply(diffVal[colorInd],imSat)
+            funcOverlay[:,:,channel]=imTemp[:,:]
+
+        #WARM COLORS
+        for t in range(len(threshList)-1):
+            colorInd=np.logical_and(PSCmap<threshList[t+1],PSCmap>=threshList[t])
+            for channel in range(nChannels):
+                imTemp=funcOverlay[:,:,channel]
+                diffVal=np.subtract((np.ones((szY,szX))*colorOverlayPos[t,channel]*((2**8)-1)),imTemp)
+                imTemp[colorInd]=imTemp[colorInd]+np.multiply(diffVal[colorInd],imSat)
+                #  imTemp[colorInd]=colorOverlayPos[t,channel]*((2**8)-1)
+                funcOverlay[:,:,channel]=imTemp[:,:]
+
+        colorInd=PSCmap>threshList[t+1]
+        for channel in range(nChannels):
+            imTemp=funcOverlay[:,:,channel]
+            diffVal=np.subtract((np.ones((szY,szX))*colorOverlayPos[t,channel]*((2**8)-1)),imTemp)
+            imTemp[colorInd]=imTemp[colorInd]+np.multiply(diffVal[colorInd],imSat)
+            #imTemp[colorInd]=colorOverlayPos[t,channel]*((2**8)-1)
+            funcOverlay[:,:,channel]=imTemp[:,:]
+
+        #MAKE AND SAVE IMAGE WITH COLOR BAR
+        mycmap = array2cmap(cMap)
+        plt.imshow(np.uint8(funcOverlay),cmap=mycmap)
+        plt.axis('off')
+
+        nPos=np.shape(colorOverlayPos)[0]
+        nNeg=np.shape(colorOverlayNeg)[0]
+        nSteps=nPos+nNeg+1
+
+        t1Loc=np.true_divide(1,nSteps)
+        t2Loc=(np.true_divide(1,nSteps)*nPos)-np.true_divide(t1Loc,2)
+        t3Loc=t2Loc+(2*np.true_divide(1,nSteps))
+        t4Loc=1-np.true_divide(1,nSteps)
+        tickLoc=np.array([t1Loc,t2Loc,t3Loc,t4Loc])
+        tickLoc=tickLoc*np.max(np.uint8(funcOverlay))
+
+        t1Label=-np.max(threshList)
+        t2Label=-np.min(threshList)
+        t3Label=np.min(threshList)
+        t4Label=np.max(threshList)
+        tickLabels=np.around(np.array([t1Label,t2Label,t3Label,t4Label]),4)
+
+        cb = plt.colorbar()
+        cb.set_ticks(tickLoc)
+        cb.set_ticklabels(tickLabels)
+
+        if mask is None:
+            outFile='%s_%s_FDR_%s_withColorbar.png'%\
+            (figOutDir+sessID,contrastDic[c]['name'],str(FDRthresh))
+            plt.savefig(outFile)
+            outFile='%s_%s_FDR_%s_image.png'%\
+            (figOutDir+sessID,contrastDic[c]['name'],str(FDRthresh))
+        else:
+            outFile='%s_%s_FDR_%s_mask_%s_withColorbar.png'%\
+            (figOutDir+sessID,contrastDic[c]['name'],str(FDRthresh),mask)
+            plt.savefig(outFile)
+            outFile='%s_%s_FDR_%s_mask_%s_image.png'%\
+            (figOutDir+sessID,contrastDic[c]['name'],str(FDRthresh),mask)
+
+        misc.imsave(outFile,np.uint8(funcOverlay))
+
+        plt.clf()
 
 def generate_bootstrapStat_map(sourceRoot,sessID,analysisDir,avgFolder,motionCorrection=False,\
     manualThresh = False, threshMin = 1.35, threshMax = 3,contrastName=None,mask=None):
@@ -2861,9 +3242,6 @@ def generate_preference_map(sourceRoot,sessID,analysisDir,avgFolder,nCond,motion
         padRight=int(szX-boundaries[3])
         allMaps=np.pad(allMaps,((padDown,padUp),(padLeft,padRight),(0,0)),'constant',constant_values=((0, 0),(0,0),(0,0)))
 
-    #APPLY MASK, IF INDICATED
-    if mask is not None:
-        respMap=respMap*maskM
 
     szYmap=szX
     szXmap=szY
@@ -2871,6 +3249,11 @@ def generate_preference_map(sourceRoot,sessID,analysisDir,avgFolder,nCond,motion
     sumSigMap=np.sum(allMaps,2)
     maxPos=np.argmax(allMaps,2)+1
     maxPos[sumSigMap==0]=0
+
+    #APPLY MASK, IF INDICATED
+    if mask is not None:
+        maxPos=maxPos*maskM
+
 
     if nCond==4:
         #MAKE MAPS
@@ -4316,44 +4699,66 @@ def get_condition_list(sourceRoot,sessID,runList):
         condList[idx]=frameCond[0]
     return condList
 
-def get_analysis_path_phase(analysisRoot, targetFreq, interp=False, removeRollingMean=False, \
-    motionCorrection=False,averageFrames=None):
-    #Cesar Echavarria 11/2016
+def exclude_edge_periods(frameArray,frameTimes,stimFreq):
+    tStart=np.true_divide(1,stimFreq)
+    nCycles=np.round(frameTimes[-1]/np.true_divide(1,stimFreq))
+    tEnd=np.true_divide(1,stimFreq)*(nCycles-1)
+    
+    indStart=np.where(frameTimes>tStart)[0][0]
+    indEnd=np.where(frameTimes>tEnd)[0][0]-1
+    
+    arrayNew=frameArray[:,indStart:indEnd]
+    frameTimesNew=frameTimes[indStart:indEnd]
+    
+    return arrayNew,frameTimesNew
 
-    imgOperationDir=''
+def get_analysis_path_phase(analysisRoot, targetFreq, interp=False, excludeEdges=False, removeRollingMean=False, \
+    motionCorrection=False,averageFrames=None):
+    #Cesar Echavarria 2/2017
+
+    interpString=''
+    excludeString=''
+    averageString=''
+    removeRollingString=''
     #DEFINE DIRECTORIES
     if motionCorrection:
-        imgOperationDir=imgOperationDir+'motionCorrection'
+        imgOperationDir='motionCorrection'
     else:
-        imgOperationDir=imgOperationDir+'noMotionCorrection'
+        imgOperationDir='noMotionCorrection'
+
 
     procedureDir=''
-    if interpolate:
-        procedureDir=procedureDir+'interpolate'
+    if interp:
+        interpString='interpolate_'
+          
+    if excludeEdges:
+        excludeString='excludeEdges_'
 
     if averageFrames is not None:
-        procedureDir=procedureDir+'_averageFrames_'+str(averageFrames)
+        averageString='averageFrames_'+str(averageFrames)+'_'
 
     if removeRollingMean:
-        procedureDir=procedureDir+'_minusRollingMean'
+        removeRollingString='minusRollingMean'
 
-    phaseDir=analysisRoot+'/phase/'+imgOperationDir+'/'+procedureDir+'/targetFreq_'+str(targetFreq)+'Hz'+'/'
+    procedureDir=interpString+excludeString+averageString+removeRollingString
+
+    phaseDir='%s/phase/%s/%s/targetFreq_%sHz/'%(analysisRoot,imgOperationDir,procedureDir,targetFreq)
+
 
     return phaseDir
 
+
 def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimFreq, frameRate, \
-    interp=False, removeRollingMean=False, \
+    interp=False, excludeEdges=False, removeRollingMean=False, \
     motionCorrection=False,averageFrames=None,loadCorrectedFrames=True,saveImages=True,makeMovies=True,\
     stimType=None,mask=None):
-    
-
-    # DEFINE DIRECTORIES
+     # DEFINE DIRECTORIES
     anatSource=targetRoot+'Sessions/'+sessID+'/Surface/'
     motionDir=targetRoot+'/Sessions/'+sessID+'/Motion/';
     motionFileDir=motionDir+'Registration/'
 
     analysisRoot=targetRoot+'/Sessions/'+sessID+'/Analyses/';
-    analysisDir=get_analysis_path_phase(analysisRoot, stimFreq, interp, removeRollingMean, \
+    analysisDir=get_analysis_path_phase(analysisRoot, stimFreq, interp, excludeEdges,removeRollingMean, \
         motionCorrection,averageFrames)
 
     fileOutDir=analysisDir+'SingleRunData/Files/'
@@ -4362,19 +4767,20 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
 
     if saveImages:
         figOutDirRoot=analysisDir+'SingleRunData/Figures/'
-        
 
-       # OUTPUT TEXT FILE WITH PACKAGE VERSION
-    outFile=fileOutDir+'analysis_version_info.txt'
-    versionTextFile = open(outFile, 'w+')
-    versionTextFile.write('WiPy version '+__version__+'\n')
-    versionTextFile.close()
 
+    #    # OUTPUT TEXT FILE WITH PACKAGE VERSION
+    # outFile=fileOutDir+'analysis_version_info.txt'
+    # versionTextFile = open(outFile, 'w+')
+    # versionTextFile.write('WiPy version '+__version__+'\n')
+    # versionTextFile.close()
 
     condList = get_condition_list(sourceRoot,sessID,runList)
-    #GET INTERPOLATION TIME
-    newStartT,newEndT=get_interp_extremes(sourceRoot,sessID,runList,stimFreq)
-    newTimes=np.arange(1.0/frameRate,newEndT,1.0/frameRate)#always use the same time points
+    if interp:
+        #GET INTERPOLATION TIME
+        newStartT,newEndT=get_interp_extremes(sourceRoot,sessID,runList,stimFreq)
+        newTimes=np.arange(newStartT+(1.0/frameRate),newEndT,1.0/frameRate)#always use the same time points
+
 
     for runCount,run in enumerate(runList):
         print('run='+str(run))
@@ -4447,12 +4853,18 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
 
         frameArray=np.reshape(frameArray,(szY*szX,frameCount))
 
-
         #INTERPOLATE FOR CONSTANT FRAME RATE
         if interp:
             print('Interpolating....')
             frameArray=interpolate_array(frameTimes,frameArray,newTimes)
             frameTimes=newTimes
+
+        #EXCLUDE FIRST AND LAST PERIOD
+        if excludeEdges:
+                print('Excluding first and last periods...')
+                frameArray,frameTimes=exclude_edge_periods(frameArray,frameTimes,stimFreq)
+
+        meanPixelValue=np.mean(frameArray,1)
 
         # REMOVE ROLLING AVERAGE
         if removeRollingMean:
@@ -4492,7 +4904,6 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
             frameArray=smoothFrameArray
             del smoothFrameArray
 
-
         #Get FFT
         print('Analyzing phase and magnitude....')
         fourierData = np.fft.fft(frameArray)
@@ -4516,15 +4927,20 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
         freqIdx=np.argmin(np.absolute(freqs-stimFreq))
         topFreqIdx=np.where(freqs>1)[0][0]
 
+        #GET PERCENT SIGNAL MODULATION
+        meanPixelValue=np.expand_dims(meanPixelValue,1)
+        meanPixelValue=np.tile(meanPixelValue,(1,frameArray.shape[1]))
+        frameArrayPSC=np.true_divide(frameArray,meanPixelValue)*100
+
         #OUTPUT TEXT FILE FREQUENCY CHANNEL ANALYZED
         if runCount == 0:
 
             outFile=fileOutDir+'frequency_analyzed.txt'
             freqTextFile = open(outFile, 'w+')
-        freqTextFile.write('RUN '+str(run)+' '+str(np.around(freqs[freqIdx],4))+' Hz\n')
+            freqTextFile.write('RUN '+str(run)+' '+str(np.around(freqs[freqIdx],4))+' Hz\n')
 
         if saveImages:
-            
+
             maxModIdx=np.argmax(magData[:,freqIdx],0)
             outFile = figOutDir+sessID+'_run'+str(run)+'_magnitudePlot.png'
             fig=plt.figure()
@@ -4532,15 +4948,21 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
             fig.suptitle(sessID+' run '+str(run)+' magnitude', fontsize=20)
             plt.xlabel('Frequency (Hz)',fontsize=16)
             plt.ylabel('Magnitude',fontsize=16)
+            axes = plt.gca()
+            ymin, ymax = axes.get_ylim()
+            plt.axvline(x=freqs[freqIdx], ymin=ymin, ymax = ymax, linewidth=1, color='r')
             plt.savefig(outFile)
             plt.close()
-            
+
             outFile = figOutDir+sessID+'_run'+str(run)+'_magnitudePlot_zoom.png'
             fig=plt.figure()
             plt.plot(freqs[0:topFreqIdx],magData[maxModIdx,0:topFreqIdx])
             fig.suptitle(sessID+' run '+str(run)+' magnitude', fontsize=20)
             plt.xlabel('Frequency (Hz)',fontsize=16)
             plt.ylabel('Magnitude',fontsize=16)
+            axes = plt.gca()
+            ymin, ymax = axes.get_ylim()
+            plt.axvline(x=freqs[freqIdx], ymin=ymin, ymax = ymax, linewidth=1, color='r')
             plt.savefig(outFile)
             plt.close()
 
@@ -4550,21 +4972,24 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
 
             outFile = figOutDir+sessID+'_run'+str(run)+'_timecourse.png'
             fig=plt.figure()
-            print(frameTimes.shape)
-            print(frameArray.shape)
-            plt.plot(frameTimes,frameArray[maxModIdx,:])
+
+            plt.plot(frameTimes,frameArrayPSC[maxModIdx,:])
             fig.suptitle(sessID+' run '+str(run)+' timecourse', fontsize=20)
             plt.xlabel('Time (s)',fontsize=16)
-            plt.ylabel('Pixel Value',fontsize=16)
+            plt.ylabel('Signal Change (%)',fontsize=16)
             axes = plt.gca()
             ymin, ymax = axes.get_ylim()
-            for f in periodStartFrames:
-                plt.axvline(x=frameTimes[f], ymin=ymin, ymax = ymax, linewidth=1, color='k')
+            if interp:
+                for f in periodStartFrames:
+                    plt.axvline(x=frameTimes[f], ymin=ymin, ymax = ymax, linewidth=1, color='k')
+            else:
+                for f in periodStartFrames:
+                    plt.axvline(x=frameTimes[f], ymin=ymin, ymax = ymax, linewidth=1, color='k')
+            axes.set_xlim([frameTimes[0],frameTimes[-1]])
             plt.savefig(outFile)
             plt.close()
 
-
-
+        #index into target frequecny and reshape arrays to maps
         magArray=magData[:,freqIdx]
         magMap=np.reshape(magArray,(szY,szX))
         phaseArray=phaseData[:,freqIdx]
@@ -4575,19 +5000,85 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
         phaseMapDisplay[phaseMap<0]=-phaseMap[phaseMap<0]
         phaseMapDisplay[phaseMap>0]=(2*np.pi)-phaseMap[phaseMap>0]
 
-
+        #get various measures of data quality
+        #1) magnitude and ratio of magnitude
         tmp=np.copy(magData)
         np.delete(tmp,freqIdx,1)
-        magRatio=magArray/np.sum(tmp,1)
+        nonTargetMagArray=np.sum(tmp,1)
+        magRatio=magArray/nonTargetMagArray
         magRatioMap=np.reshape(magRatio,(szY,szX))
+        nonTargetMagMap=np.reshape(nonTargetMagArray,(szY,szX))
+
+        #2) amplitude and variance expained
+
+        t=frameTimes*(2*np.pi)*stimFreq
+        t=np.transpose(np.expand_dims(t,1))
+        tMatrix=np.tile(t,(phaseData.shape[0],1))
+
+        phi=np.expand_dims(phaseArray,1)
+        phiMatrix=np.tile(phi,(1,frameArray.shape[1]))
+        Xmatrix=np.cos(tMatrix+phiMatrix)
+
+        betaArray=np.zeros((frameArray.shape[0]))
+        varExpArray=np.zeros((frameArray.shape[0]))
+
+        for pix in range(frameArray.shape[0]):
+            x=np.expand_dims(Xmatrix[pix,:],1)
+            y=frameArrayPSC[pix,:]
+            beta=np.matmul(np.linalg.pinv(x),y)
+            betaArray[pix]=beta
+            yHat=x*beta
+            SSreg=np.sum((yHat-np.mean(y,0))**2)
+            SStotal=np.sum((y-np.mean(y,0))**2)
+            varExpArray[pix]=SSreg/SStotal
+
+        betaMap=np.reshape(betaArray,(szY,szX))
+        varExpMap=np.reshape(varExpArray,(szY,szX))
 
         outFile=fileOutDir+sessID+'_run'+str(run)+'_maps'
-        np.savez(outFile,phaseMap=phaseMap,magMap=magMap,magRatioMap=magRatioMap)
-
+        np.savez(outFile,phaseMap=phaseMap,magMap=magMap,magRatioMap=magRatioMap,\
+                 nonTargetMagMap=nonTargetMagMap,betaMap=betaMap,varExpMap=varExpMap)
 
         if saveImages:
 
-            outFile = figOutDir+sessID+'_run'+str(run)+'_'+str(np.around(freqs[freqIdx],4))+'Hz_phaseMap.png'
+            outFile = '%s_run%s_%s_Hz_magMap.png'%\
+            (figOutDir+sessID,str(run),str(np.around(freqs[freqIdx],4)))
+            fig=plt.figure()
+            plt.imshow(magMap)
+            plt.colorbar()
+            fig.suptitle(sessID+' run'+str(run)+' magMap', fontsize=20)
+            plt.savefig(outFile)
+            plt.close()
+
+            outFile = '%s_run%s_%s_Hz_magRatioMap.png'%\
+            (figOutDir+sessID,str(run),str(np.around(freqs[freqIdx],4)))
+            fig=plt.figure()
+            plt.imshow(magRatioMap)
+            plt.colorbar()
+            fig.suptitle(sessID+' run'+str(run)+' magRatioMap', fontsize=20)
+            plt.savefig(outFile)
+            plt.close()
+
+            outFile = '%s_run%s_%s_Hz_amplitudeMap.png'%\
+            (figOutDir+sessID,str(run),str(np.around(freqs[freqIdx],4)))
+            fig=plt.figure()
+            plt.imshow(betaMap)
+            plt.colorbar()
+            fig.suptitle(sessID+' run'+str(run)+' Amplitude', fontsize=20)
+            plt.savefig(outFile)
+            plt.close()
+
+            outFile = '%s_run%s_%s_Hz_varianceExplained.png'%\
+            (figOutDir+sessID,str(run),str(np.around(freqs[freqIdx],4)))
+            fig=plt.figure()
+            plt.imshow(varExpMap)
+            plt.colorbar()
+            fig.suptitle(sessID+' run'+str(run)+' Variance Explained', fontsize=14)
+            plt.savefig(outFile)
+            plt.close()
+
+            outFile = '%s_run%s_%s_Hz_phaseMap.png'%\
+            (figOutDir+sessID,str(run),str(np.around(freqs[freqIdx],4)))
             fig=plt.figure()
             plt.imshow(phaseMapDisplay,'nipy_spectral',vmin=0,vmax=2*np.pi)
             plt.colorbar()
@@ -4716,8 +5207,8 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
                     rad=rad[296:1064,:]
                     rad[radMask>szScreenY/2]=0
                     legend=np.true_divide(rad,np.max(rad))*(2*np.pi)
-                    
-                    
+
+
                 elif cond ==4:
                     rad=rad[296:1064,:]
                     rad[radMask>szScreenY/2]=0
@@ -4732,23 +5223,7 @@ def analyze_periodic_data_per_run(sourceRoot, targetRoot, sessID, runList, stimF
                 plt.close()
 
 
-            outFile = figOutDir+sessID+'_run'+str(run)+'_'+str(np.around(freqs[freqIdx],4))+'Hz_magMap.png'
-            fig=plt.figure()
-            plt.imshow(magMap)
-            plt.colorbar()
-            fig.suptitle(sessID+' run'+str(run)+' magMap', fontsize=20)
-            plt.savefig(outFile)
-            plt.close()
-
-            outFile = figOutDir+sessID+'_run'+str(run)+'_'+str(np.around(freqs[freqIdx],4))+'Hz_magRatioMap.png'
-            fig=plt.figure()
-            plt.imshow(magRatioMap)
-            plt.colorbar()
-            fig.suptitle(sessID+' run'+str(run)+' magRatioMap', fontsize=20)
-            plt.savefig(outFile)
-            plt.close()
-    freqTextFile.close()
-
+        freqTextFile.close()
 
 
 def smooth_phase_array(theta,sigma,sz):
@@ -4798,7 +5273,7 @@ def smooth_array(inputArray,fwhm,phaseArray=False):
         outputArray=cv2.GaussianBlur(inputArray, (sz,sz), sigma, sigma)
     return outputArray
 
-def average_phase_per_condition(sourceRoot,targetRoot,sessID,runList,analysisDir,motionCorrection=False,smooth_fwhm=None,saveImages=True,\
+def average_phase_per_condition(sourceRoot,targetRoot,sessID,runList,analysisDir,motionCorrection=False,saveImages=True,\
     stimType=None,mask=None):
 
     # DEFINE DIRECTORIES
@@ -4809,13 +5284,11 @@ def average_phase_per_condition(sourceRoot,targetRoot,sessID,runList,analysisDir
 
 
     fileOutDir=analysisDir+'SingleConditionData/Files/'
-    if smooth_fwhm is None:
-        fileOutDir=fileOutDir+'noSmoothing/'
-    else:
-        fileOutDir=fileOutDir+'fwhm'+str(smooth_fwhm)+'/'
-
     if not os.path.exists(fileOutDir):
         os.makedirs(fileOutDir)
+
+    if saveImages:
+        figOutDirRoot=analysisDir+'SingleConditionData/Figures/'
 
     #OUTPUT TEXT FILE WITH PACKAGE VERSION
     outFile=fileOutDir+'analysis_version_info.txt'
@@ -4823,14 +5296,6 @@ def average_phase_per_condition(sourceRoot,targetRoot,sessID,runList,analysisDir
     versionTextFile.write('WiPy version '+__version__+'\n')
     versionTextFile.close()
 
-
-
-    if saveImages:
-        figOutDirRoot=analysisDir+'SingleConditionData/Figures/'
-        if smooth_fwhm is None:
-            figOutDirRoot=figOutDirRoot+'noSmoothing/'
-        else:
-            figOutDirRoot=figOutDirRoot+'fwhm'+str(smooth_fwhm)+'/'
 
 
     condList = get_condition_list(sourceRoot,sessID,runList)
@@ -4852,33 +5317,34 @@ def average_phase_per_condition(sourceRoot,targetRoot,sessID,runList,analysisDir
             f=np.load(inFile)
             phaseMap=f['phaseMap']
             magMap=f['magMap']
-            magRatioMap=f['magRatioMap']
+            nonTargetMagMap=f['nonTargetMagMap']
+
 
             #AGGREGATE MAPS
             if counter == 0:
                 phaseMapAll=phaseMap
                 magMapAll=magMap
-                magRatioMapAll=magRatioMap
+                nonTargetMagMapAll=nonTargetMagMap
             else:
                 phaseMapAll=np.dstack((phaseMapAll,phaseMap))
                 magMapAll=np.dstack((magMapAll,magMap))
-                magRatioMapAll=np.dstack((magRatioMapAll,magRatioMap))
+                nonTargetMagMapAll=np.dstack((nonTargetMagMapAll,nonTargetMagMapAll))
 
         #AVERAGE ACROSS RUNS
-        magMapMean=np.mean(magMapAll,2)
-        magRatioMapMean=np.mean(magRatioMapAll,2)
+        if len(condRunList)>1:
+            magMap=np.mean(magMapAll,2)
+            nonTargetMagMap=np.mean(nonTargetMagMapAll,2)
+             #*for phase maps first convert to cartesian and add
+            tmpX=np.sum(np.cos(phaseMapAll),2)
+            tmpY=np.sum(np.sin(phaseMapAll),2)
+            #*then get arctangent
+            phaseMapMean=np.arctan2(tmpY,tmpX)
+        else:
+            magMap=magMapAll
+            nonTargetMagMap=nonTargetMagMapAll
+            phaseMapMean=phaseMapAll
+        magRatioMap=np.true_divide(magMap,nonTargetMagMap)
 
-        #*for phase maps first convert to cartesian and add
-        tmpX=np.sum(np.cos(phaseMapAll),2)
-        tmpY=np.sum(np.sin(phaseMapAll),2)
-        #*then get arctangent
-        phaseMapMean=np.arctan2(tmpY,tmpX)
-        
-        #SMOOTH MAPS
-        if smooth_fwhm is not None:
-            phaseMapMean=smooth_array(phaseMapMean,smooth_fwhm,phaseArray=True)
-            magMapMean=smooth_array(magMapMean,smooth_fwhm)
-            magRatioMapMean=smooth_array(magRatioMapMean,smooth_fwhm)
 
         #set phase map range for visualization
         phaseMapDisplay=np.copy(phaseMapMean)
@@ -4887,17 +5353,30 @@ def average_phase_per_condition(sourceRoot,targetRoot,sessID,runList,analysisDir
 
 
         #SAVE AVERAGE MAPS
-        if smooth_fwhm is None:
-            outFile=fileOutDir+sessID+'_cond'+str(int(cond))+'_avgMaps'
-        else:
-            outFile=fileOutDir+sessID+'_cond'+str(int(cond))+'_fwhm_'+str(smooth_fwhm)+'_avgMaps'
-        np.savez(outFile,phaseMap=phaseMapMean,magMap=magMapMean,magRatioMap=magRatioMapMean)
+        outFile=fileOutDir+sessID+'_cond'+str(int(cond))+'_avgMaps'
+
+        np.savez(outFile,phaseMap=phaseMapMean,magMap=magMap,nonTargetMagMap=nonTargetMagMap,magRatioMap=magRatioMap)
 
         if saveImages:
-            if smooth_fwhm is None:
-                outFile = '%s_cond%s_meanPhaseMap.png'%(figOutDir+sessID,str(int(cond)))
-            else: 
-                outFile = '%s_cond%s_fwhm_%s_meanPhaseMap.png'%(figOutDir+sessID,str(int(cond)),str(smooth_fwhm))
+
+            outFile = figOutDir+sessID+'_cond'+str(int(cond))+'_meanMagMap.png'
+            fig=plt.figure()
+            plt.imshow(magMap)
+            plt.colorbar()
+            fig.suptitle(sessID+' cond '+str(int(cond))+' Mean Mag', fontsize=14)
+            plt.savefig(outFile)
+            plt.close()
+
+
+            outFile = figOutDir+sessID+'_cond'+str(int(cond))+'_meanMagRatioMap.png'
+            fig=plt.figure()
+            plt.imshow(magRatioMap)
+            plt.colorbar()
+            fig.suptitle(sessID+' cond '+str(int(cond))+' Mean Mag Ratio', fontsize=14)
+            plt.savefig(outFile)
+            plt.close()
+
+            outFile = '%s_cond%s_meanPhaseMap.png'%(figOutDir+sessID,str(int(cond)))
             fig=plt.figure()
             plt.imshow(phaseMapDisplay,'nipy_spectral',vmin=0,vmax=2*np.pi)
             plt.colorbar()
@@ -4928,12 +5407,9 @@ def average_phase_per_condition(sourceRoot,targetRoot,sessID,runList,analysisDir
                 phaseMapDisplay=np.pad(phaseMapDisplay,((padDown,padUp),(padLeft,padRight)),'constant',constant_values=((0, 0),(0,0)))
 
             #plot
-            if smooth_fwhm is None:
-                outFile = '%s_cond%s_phaseAverage_overlay.png'%\
-                    (figOutDir+sessID,str(int(cond)))
-            else:
-                outFile = '%s_cond%s_fwhm_%s_phaseAverage_overlay.png'%\
-                    (figOutDir+sessID,str(int(cond)),str(smooth_fwhm))
+            outFile = '%s_cond%s_phaseAverage_overlay.png'%\
+                (figOutDir+sessID,str(int(cond)))
+
 
             fig=plt.figure()
             plt.imshow(imSurf, 'gray')
@@ -4954,12 +5430,9 @@ def average_phase_per_condition(sourceRoot,targetRoot,sessID,runList,analysisDir
                 phaseMapDisplay=phaseMapDisplay*maskM
 
                 #plot
-                if smooth_fwhm is None:
-                    outFile = '%s_cond%s_phaseAverage_mask_%s.png'%\
-                        (figOutDir+sessID,str(int(cond)),mask)
-                else:
-                    outFile = '%s_cond%s_fwhm_%s_phaseAverage_mask_%s.png'%\
-                        (figOutDir+sessID,str(int(cond)),str(smooth_fwhm),mask)
+                outFile = '%s_cond%s_phaseAverage_mask_%s.png'%\
+                    (figOutDir+sessID,str(int(cond)),mask)
+
                 fig=plt.figure()
                 plt.imshow(imSurf, 'gray')
                 plt.imshow(phaseMapDisplay,'nipy_spectral',alpha=.5,vmin=0,vmax=2*np.pi)
@@ -5052,29 +5525,6 @@ def average_phase_per_condition(sourceRoot,targetRoot,sessID,runList,analysisDir
 
             
 
-            if smooth_fwhm is None:
-                outFile = figOutDir+sessID+'_cond'+str(int(cond))+'_meanMagMap.png'
-            else: 
-                outFile = figOutDir+sessID+'_cond'+str(int(cond))+'_fwhm_'+str(smooth_fwhm)+'_meanMagMap.png'
-            fig=plt.figure()
-            plt.imshow(magMapMean)
-            plt.colorbar()
-            fig.suptitle(sessID+' cond '+str(int(cond))+' Mean Mag', fontsize=14)
-            plt.savefig(outFile)
-            plt.close()
-
-            if smooth_fwhm is None:
-                outFile = figOutDir+sessID+'_cond'+str(int(cond))+'_meanMagRatioMap.png'
-            else: 
-                outFile = figOutDir+sessID+'_cond'+str(int(cond))+'_fwhm_'+str(smooth_fwhm)+'_meanMagRatioMap.png'
-            fig=plt.figure()
-            plt.imshow(magRatioMapMean)
-            plt.colorbar()
-            fig.suptitle(sessID+' cond '+str(int(cond))+' Mean Mag Ratio', fontsize=14)
-            plt.savefig(outFile)
-            plt.close()
-
-
 def angle_array_to_complex_array(inputAngle):
     imagZ=np.empty(np.shape(inputAngle))
     imagZ[:]=np.NAN
@@ -5122,21 +5572,18 @@ def angle_array_to_complex_array(inputAngle):
     return Z
 
 def combine_phase_conditions(sourceRoot,analysisDir,sessID,motionCorrection=False,\
-                             condPairs=None,condPairLabels=None,smooth_fwhm=None,saveImages=True,\
+                             condPairs=None,condPairLabels=None,saveImages=True,\
                              stimType=None,mask=None):
 
 
     # DEFINE DIRECTORIES
-    inDir = analysisDir+'SingleConditionData/Files/noSmoothing/'
+    inDir = analysisDir+'SingleConditionData/Files/'
     anatSource=sourceRoot+'Sessions/'+sessID+'/Surface/'
     motionDir=sourceRoot+'/Sessions/'+sessID+'/Motion/';
     motionFileDir=motionDir+'Registration/'
 
     fileOutDir=analysisDir+'AbsolutePositionData/Files/'
-    if smooth_fwhm is None:
-        fileOutDir=fileOutDir+'noSmoothing/'
-    else:
-        fileOutDir=fileOutDir+'fwhm'+str(smooth_fwhm)+'/'
+
     if not os.path.exists(fileOutDir):
         os.makedirs(fileOutDir)
 
@@ -5147,17 +5594,17 @@ def combine_phase_conditions(sourceRoot,analysisDir,sessID,motionCorrection=Fals
     versionTextFile.close()
 
     if saveImages:
-        figOutDir=analysisDir+'AbsolutePositionData/Figures/'
-        if smooth_fwhm is None:
-            figOutDir=figOutDir+'noSmoothing/'
-        else:
-            figOutDir=figOutDir+'fwhm'+str(smooth_fwhm)+'/'
-
-        if not os.path.exists(figOutDir):
-            os.makedirs(figOutDir)
+        figOutDirRoot=analysisDir+'AbsolutePositionData/Figures/'
+        if not os.path.exists(figOutDirRoot):
+            os.makedirs(figOutDirRoot)
 
 
     for (pairCounter,condPair) in enumerate(condPairs):
+        if saveImages:
+            figOutDir=figOutDirRoot+condPairLabels[pairCounter]+'/'
+            if not os.path.exists(figOutDir):
+                os.makedirs(figOutDir)
+
         for (counter,cond) in enumerate(condPair):
 
             print('cond='+str(int(cond)))
@@ -5167,24 +5614,25 @@ def combine_phase_conditions(sourceRoot,analysisDir,sessID,motionCorrection=Fals
             f=np.load(inFile)
             phaseMap=f['phaseMap'] 
             magMap=f['magMap']
-            magRatioMap=f['magRatioMap']
+            nonTargetMagMap=f['nonTargetMagMap']
 
 
             #AGGREGATE MAPS
             if counter == 0:
                 phaseMapAll=phaseMap
                 magMapAll=magMap
-                magRatioMapAll=magRatioMap
+                nonTargetMagMapAll=nonTargetMagMap
             else:
                 phaseMapAll=np.dstack((phaseMapAll,phaseMap))
                 magMapAll=np.dstack((magMapAll,magMap))
-                magRatioMapAll=np.dstack((magRatioMapAll,magRatioMap))
+                nonTargetMagMapAll=np.dstack((nonTargetMagMapAll,nonTargetMagMapAll))
 
 
 
         #AVERAGE ACROSS CONDITIONS
-        magMapMean=np.mean(magMapAll,2)
-        magRatioMapMean=np.mean(magRatioMapAll,2)
+        magMap=np.mean(magMapAll,2)
+        nonTargetMagMap=np.mean(nonTargetMagMapAll,2)
+        magRatioMap=np.true_divide(magMap,nonTargetMagMap)
 
         #GET HALF ANGLE MAPS
         halfAngleMap=np.true_divide(phaseMapAll[:,:,0],2)
@@ -5208,39 +5656,46 @@ def combine_phase_conditions(sourceRoot,analysisDir,sessID,motionCorrection=Fals
 
         absPhaseMap=tmp
 
+        phaseMapDisplay=np.copy(absPhaseMap)
+        phaseMapDisplay[absPhaseMap<0]=-absPhaseMap[absPhaseMap<0]
+        phaseMapDisplay[absPhaseMap>0]=(2*np.pi)-absPhaseMap[absPhaseMap>0]
+
         #get delay map
         delayMap=halfAngleMap+halfAngleMap2
-        delayMap[regionToFix]=np.pi+delayMap[regionToFix]
+        delayMap[regionToFix1]=np.pi+delayMap[regionToFix1]
+        delayMap[regionToFix2]=delayMap[regionToFix2]-np.pi
 
-
-        #SMOOTH MAPS
-        if smooth_fwhm is not None:
-            absPhaseMap=smooth_array(absPhaseMap,smooth_fwhm,phaseArray=True)
-            delayMap=smooth_array(delayMap,smooth_fwhm,phaseArray=True)
-            magMapMean=smooth_array(magMapMean,smooth_fwhm)
-            magRatioMapMean=smooth_array(magRatioMapMean,smooth_fwhm)
 
 
         #SAVE AVERAGE MAPS
-        if smooth_fwhm is None:
-            outFile=fileOutDir+sessID+'_'+condPairLabels[pairCounter]+'_avgMaps'
-        else:
-            outFile=fileOutDir+sessID+'_'+condPairLabels[pairCounter]+'_fwhm_'+str(smooth_fwhm)+'_avgMaps'
-        np.savez(outFile,absPhaseMap=absPhaseMap,magMap=magMapMean,magRatioMap=magRatioMapMean)
+
+        outFile=fileOutDir+sessID+'_'+condPairLabels[pairCounter]+'_avgMaps'
+        np.savez(outFile,absPhaseMap=absPhaseMap,delayMap=delayMap,magMap=magMap,\
+            nonTargetMagMap=nonTargetMagMap,magRatioMap=magRatioMap)
 
         if saveImages:
-            phaseMapDisplay=np.copy(absPhaseMap)
-            phaseMapDisplay[absPhaseMap<0]=-absPhaseMap[absPhaseMap<0]
-            phaseMapDisplay[absPhaseMap>0]=(2*np.pi)-absPhaseMap[absPhaseMap>0]
+
+            outFile = '%s_%s_meanMagMap.png'%\
+            (figOutDir+sessID,condPairLabels[pairCounter])
+            fig=plt.figure()
+            plt.imshow(magMap)
+            plt.colorbar()
+            fig.suptitle(sessID+' '+condPairLabels[pairCounter]+' Mean Mag', fontsize=14)
+            plt.savefig(outFile)
+            plt.close()
+
+            outFile = '%s_%s_meanMagRatio.png'%\
+            (figOutDir+sessID,condPairLabels[pairCounter])
+            fig=plt.figure()
+            plt.imshow(magRatioMap)
+            plt.colorbar()
+            fig.suptitle(sessID+' '+condPairLabels[pairCounter]+' Mean Mag Ratio', fontsize=14)
+            plt.savefig(outFile)
+            plt.close()
 
 
-            if smooth_fwhm is None:
-                outFile = '%s_%s_delayMap.png'%\
-                (figOutDir+sessID,condPairLabels[pairCounter])
-            else:
-                outFile = '%s_%s_fwhm_%s_delayMap.png'%\
-                (figOutDir+sessID,condPairLabels[pairCounter],str(smooth_fwhm))
-
+            outFile = '%s_%s_delayMap.png'%\
+            (figOutDir+sessID,condPairLabels[pairCounter])
             fig=plt.figure()
             plt.imshow(delayMap,'nipy_spectral',vmin=-np.pi,vmax=np.pi)
             plt.colorbar()
@@ -5248,14 +5703,11 @@ def combine_phase_conditions(sourceRoot,analysisDir,sessID,motionCorrection=Fals
             plt.savefig(outFile)
             plt.close()
 
-            if smooth_fwhm is None:
-                outFile = '%s_%s_absPhaseMap.png'%\
-                (figOutDir+sessID,condPairLabels[pairCounter])
-            else:
-                outFile = '%s_%s_fwhm_%s_absPhaseMap.png'%\
-                (figOutDir+sessID,condPairLabels[pairCounter],str(smooth_fwhm))
 
-        	fig=plt.figure()
+            outFile = '%s_%s_absPhaseMap.png'%\
+            (figOutDir+sessID,condPairLabels[pairCounter])
+
+            fig=plt.figure()
             plt.imshow(phaseMapDisplay,'nipy_spectral',vmin=0,vmax=2*np.pi)
             plt.colorbar()
             fig.suptitle(sessID+' '+condPairLabels[pairCounter]+' Absolute Phase', fontsize=14)
@@ -5283,14 +5735,11 @@ def combine_phase_conditions(sourceRoot,analysisDir,sessID,motionCorrection=Fals
                 padRight=int(szX-boundaries[3])
 
                 phaseMapDisplay=np.pad(phaseMapDisplay,((padDown,padUp),(padLeft,padRight)),'constant',constant_values=((0, 0),(0,0)))
+                delayMap=np.pad(delayMap,((padDown,padUp),(padLeft,padRight)),'constant',constant_values=((np.nan, np.nan),(np.nan, np.nan)))
 
             #plot
-            if smooth_fwhm is None:
-                outFile = '%s_%s_absPhaseMap_overlay.png'%\
-                    (figOutDir+sessID,condPairLabels[pairCounter])
-            else:
-                outFile = '%s_%s_fwhm_%s_absPhaseMap_overlay.png'%\
-                    (figOutDir+sessID,condPairLabels[pairCounter],str(smooth_fwhm))
+            outFile = '%s_%s_absPhaseMap_overlay.png'%\
+                (figOutDir+sessID,condPairLabels[pairCounter])
 
             fig=plt.figure()
             plt.imshow(imSurf, 'gray')
@@ -5299,6 +5748,7 @@ def combine_phase_conditions(sourceRoot,analysisDir,sessID,motionCorrection=Fals
             fig.suptitle(sessID+' cond'+str(cond)+' phaseMap', fontsize=20)
             plt.savefig(outFile)
             plt.close()
+
 
             #output masked image as well, if indicated
             if mask is not None:
@@ -5309,19 +5759,27 @@ def combine_phase_conditions(sourceRoot,analysisDir,sessID,motionCorrection=Fals
 
                 #apply mask
                 phaseMapDisplay=phaseMapDisplay*maskM
+                delayMap[maskM==0]=np.nan
 
                 #plot
-
-                if smooth_fwhm is None:
-                    outFile = '%s_%s_absPhaseMap_mask_%s.png'%\
-                        (figOutDir+sessID,condPairLabels[pairCounter],mask)
-                else:
-                    outFile = '%s_%s_fwhm_%s_absPhaseMap_mask_%s.png'%\
-                        (figOutDir+sessID,condPairLabels[pairCounter],str(smooth_fwhm),mask)
-
+                outFile = '%s_%s_absPhaseMap_mask_%s.png'%\
+                    (figOutDir+sessID,condPairLabels[pairCounter],mask)
                 fig=plt.figure()
                 plt.imshow(imSurf, 'gray')
                 plt.imshow(phaseMapDisplay,'nipy_spectral',alpha=.5,vmin=0,vmax=2*np.pi)
+                plt.colorbar()
+                fig.suptitle(sessID+' cond'+str(cond)+' phaseMap', fontsize=20)
+                plt.savefig(outFile)
+                plt.close()
+
+                #plot
+                outFile = '%s_%s_delayMap_mask_%s.png'%\
+                    (figOutDir+sessID,condPairLabels[pairCounter],mask)
+
+
+                fig=plt.figure()
+                plt.imshow(imSurf, 'gray')
+                plt.imshow(delayMap,'nipy_spectral',alpha=.5,vmin=-np.pi,vmax=np.pi)
                 plt.colorbar()
                 fig.suptitle(sessID+' cond'+str(cond)+' phaseMap', fontsize=20)
                 plt.savefig(outFile)
@@ -5395,31 +5853,7 @@ def combine_phase_conditions(sourceRoot,analysisDir,sessID,motionCorrection=Fals
                 plt.close()
 
 
-
-            if smooth_fwhm is None:
-                outFile = figOutDir+sessID+'_'+condPairLabels[pairCounter]+'_meanMagMap.png'
-            else:
-                outFile = figOutDir+sessID+'_'+condPairLabels[pairCounter]+'_fwhm_'+str(smooth_fwhm)+'_meanMagMap.png'
-
-            fig=plt.figure()
-            plt.imshow(magMapMean)
-            plt.colorbar()
-            fig.suptitle(sessID+' '+condPairLabels[pairCounter]+' Mean Mag', fontsize=14)
-            plt.savefig(outFile)
-            plt.close()
-
-            if smooth_fwhm is None:
-                outFile = figOutDir+sessID+'_'+condPairLabels[pairCounter]+'_meanMagRatio.png'
-            else:
-                outFile = figOutDir+sessID+'_'+condPairLabels[pairCounter]+'_fwhm'+str(smooth_fwhm)+'_meanMagRatio.png'
-            fig=plt.figure()
-            plt.imshow(magRatioMapMean)
-            plt.colorbar()
-            fig.suptitle(sessID+' '+condPairLabels[pairCounter]+' Mean Mag Ratio', fontsize=14)
-            plt.savefig(outFile)
-            plt.close()
-
-def get_analysis_path_timecourse(analysisRoot,  interp=False, removeRollingMean=False, \
+def get_analysis_path_timecourse(analysisRoot,  interpolate=False, excludeEdges=False, removeRollingMean=False, \
     motionCorrection=False,averageFrames=None):
     #Cesar Echavarria 11/2016
 
@@ -5434,6 +5868,9 @@ def get_analysis_path_timecourse(analysisRoot,  interp=False, removeRollingMean=
     procedureDir=''
     if interpolate:
         procedureDir=procedureDir+'interpolate'
+        
+    if excludeEdges:
+        procedureDir=procedureDir+'excludeEdges'
 
     if averageFrames is not None:
         procedureDir=procedureDir+'_averageFrames_'+str(averageFrames)
@@ -5454,9 +5891,10 @@ def get_interp_extremes(sourceRoot,sessID,runList,stimFreq):
     planFolder=runFolder[0]+"/plan/"
     frameTimes,frameCond,frameCount = get_frame_times(planFolder)
 
-    tMin=0
+    tMin=np.true_divide(1,stimFreq)
     nCycles=np.round(frameTimes[-1]/np.true_divide(1,stimFreq))
-    tMax=np.true_divide(1,stimFreq)*nCycles
+    tMax=np.true_divide(1,stimFreq)*(nCycles-1)
+
 
     return tMin,tMax
 
@@ -5480,8 +5918,8 @@ def interpolate_array(t0,array0,tNew):
     return arrayNew
 
 def analyze_complete_timecourse(sourceRoot, targetRoot, sessID, runList, stimFreq, frameRate, \
-                               interp=False, removeRollingMean=False, \
-                               motionCorrection=False,averageFrames=None,loadCorrectedFrames=True,\
+                               interp=False, excludeEdges=False, removeRollingMean=False, \
+                               motionCorrection=False,averageFrames=None, groupPeriods = None, loadCorrectedFrames=True,\
                                SDmaps=False,makeSingleRunMovies=False,makeSingleCondMovies=True):
 
 
@@ -5490,8 +5928,8 @@ def analyze_complete_timecourse(sourceRoot, targetRoot, sessID, runList, stimFre
     motionDir=targetRoot+'/Sessions/'+sessID+'/Motion/';
     motionFileDir=motionDir+'Registration/'
 
-    analysisRoot=targetRoot+'/Sessions/'+sessID+'/Analyses/';
-    analysisDir=get_analysis_path_timecourse(analysisRoot, interp, removeRollingMean, \
+    analysisRoot=targetRoot+'/Sessions/'+sessID+'/Analyses/'
+    analysisDir=get_analysis_path_timecourse(analysisRoot, interp, excludeEdges, removeRollingMean, \
         motionCorrection,averageFrames)
 
     fileOutDir=analysisDir+'SingleConditionData/Files/'
@@ -5518,11 +5956,12 @@ def analyze_complete_timecourse(sourceRoot, targetRoot, sessID, runList, stimFre
         if not os.path.exists(figOutDir):
             os.makedirs(figOutDir) 
 
-
     condList = get_condition_list(sourceRoot,sessID,runList)
-    #GET INTERPOLATION TIME
-    newStartT,newEndT=get_interp_extremes(sourceRoot,sessID,runList,stimFreq)
-    newTimes=np.arange(newStartT,newEndT,1.0/frameRate)#always use the same time points
+    if interp:
+        #GET INTERPOLATION TIME
+        newStartT,newEndT=get_interp_extremes(sourceRoot,sessID,runList,stimFreq)
+        newTimes=np.arange(newStartT+(1.0/frameRate),newEndT,1.0/frameRate)#always use the same time points
+
 
     for cond in np.unique(condList):
         print('cond='+str(cond))
@@ -5591,14 +6030,16 @@ def analyze_complete_timecourse(sourceRoot, targetRoot, sessID, runList, stimFre
                     frameArray[:,:,f]=np.copy(im0)
 
             frameArray=np.reshape(frameArray,(szY*szX,frameCount))
-
+            
             #INTERPOLATE FOR CONSTANT FRAME RATE
             if interp:
                 print('Interpolating...')
-                newFrameArray=interpolate_array(frameTimes,frameArray,newTimes)
+                frameArray=interpolate_array(frameTimes,frameArray,newTimes)
                 frameTimes=newTimes
-
-
+            if counter == 0:   
+                meanPixelValue=np.mean(frameArray,1)
+            else:
+                meanPixelValue=np.vstack((meanPixelValue,np.mean(frameArray,1)))
             # REMOVE ROLLING AVERAGE
             if removeRollingMean:
                 print('Removing Rolling Mean...')
@@ -5619,7 +6060,7 @@ def analyze_complete_timecourse(sourceRoot, targetRoot, sessID, runList, stimFre
                 frameArray=detrendedFrameArray
                 del detrendedFrameArray
 
-                #AVERAGE FRAMES
+            #AVERAGE FRAMES
             if averageFrames is not None:
                 print('Pooling frames values....')
                 smoothFrameArray=np.zeros(np.shape(frameArray))
@@ -5636,6 +6077,11 @@ def analyze_complete_timecourse(sourceRoot, targetRoot, sessID, runList, stimFre
                     smoothFrameArray[pix,:]=tmp2
                 frameArray=smoothFrameArray
                 del smoothFrameArray
+            
+            #EXCLUDE FIRST AND LAST PERIOD
+            if excludeEdges:
+                print('Excluding first and last periods...')
+                frameArray,frameTimes=exclude_edge_periods(frameArray,frameTimes,stimFreq)
 
             if makeSingleRunMovies:
                 tmp=frameArray
@@ -5648,18 +6094,57 @@ def analyze_complete_timecourse(sourceRoot, targetRoot, sessID, runList, stimFre
 
                 #MAKE MOVIE
                 outFile=singleRunMovieOutDir+'cond'+str(cond)+'_run'+str(counter+1)+'_movie.mp4'
-                make_movie_from_stack(singleRunMovieOutDir,tmp,frameRate=frameRate,movFile=outFile)
+                make_movie_from_stack(singleRunMovieOutDir,tmp,frameRate,outFile)
+            
 
             if counter == 0:
                 frameArrayAll=frameArray
             else:
                 frameArrayAll=np.dstack((frameArrayAll,frameArray))
+
+            if groupPeriods is not None:
+                if counter ==0:
+                    stimPeriod=1.0/stimFreq
+                    framePeriod=1.0/frameRate
+                    nCycles=np.round(frameTimes[-1]/stimPeriod)
+                    if excludeEdges:
+                        nCycles=nCycles-1
+                    nGroups=int(np.floor(nCycles/groupPeriods))
+                    print(nCycles,nGroups,groupPeriods)
+
+                for g in range(nGroups):
+                    startTime=stimPeriod*((g*groupPeriods)+1)
+                    startInd=np.where(frameTimes>startTime)[0][0]
+                    endInd=startInd+np.floor((groupPeriods*stimPeriod)/framePeriod)-1
+
+                    print(startInd,endInd)
+                    frameArrayGroup=frameArray[:,startInd:endInd]
+                    if counter == 0 and g == 0:
+                        frameArrayGrouped=frameArrayGroup
+                    else:
+                        frameArrayGrouped=np.dstack((frameArrayGrouped,frameArrayGroup))
+                    del frameArrayGroup
+                    
             del frameArray
+
+
         #AVERAGE PER CONDITION
-        frameArrayAvg=np.mean(frameArrayAll,2)
+        meanPixelValue=np.squeeze(np.mean(meanPixelValue,0))
+        if len(frameArrayAll.shape)==3:
+            frameArrayAvg=np.mean(frameArrayAll,2)
+        else:
+            frameArrayAvg=frameArrayAll
         del frameArrayAll
+        if groupPeriods is None:
+            frameArrayGroupedAvg=[]
+        else:
+            frameArrayGroupedAvg=np.mean(frameArrayGrouped,2)
+        
         outFile=fileOutDir+'cond'+str(cond)+'_averageTimeCourse'
-        np.savez(outFile,frameArrayAvg=frameArrayAvg,frameTimes=frameTimes,szY=szY,szX=szX,frameCount=frameCount)
+        np.savez(outFile,frameArrayAvg=frameArrayAvg,frameTimes=frameTimes,\
+                 szY=szY,szX=szX,frameCount=frameCount,\
+                 meanPixelValue=meanPixelValue,\
+                groupPeriods=groupPeriods,frameArrayGroupedAvg=frameArrayGroupedAvg)
 
 
         if SDmaps:
@@ -5673,27 +6158,42 @@ def analyze_complete_timecourse(sourceRoot, targetRoot, sessID, runList, stimFre
             plt.savefig(figOutDir+'cond'+str(cond)+'_SDmap.png')
 
         if makeSingleCondMovies:
-            #RESHAPE
-            nPix,nPts=np.shape(frameArrayAvg)
-            frameArrayAvg=np.reshape(frameArrayAvg,(szY,szX,nPts))
+            if groupPeriods is None:
+                #RESHAPE
+                nPix,nPts=np.shape(frameArrayAvg)
+                frameArrayAvg=np.reshape(frameArrayAvg,(szY,szX,nPts))
 
-            #NORMALIZE ARRAY
-            frameArrayAvg=normalize_stack(frameArrayAvg)
+                #NORMALIZE ARRAY
+                frameArrayAvg=normalize_stack(frameArrayAvg)
 
-            #MAKE MOVIE
-            outFile=avgMovieOutDir+'cond'+str(cond)+'_average_movie.mp4'
-            make_movie_from_stack(avgMovieOutDir,frameArrayAvg,frameRate=frameRate,movFile=outFile)
+                #MAKE MOVIE
+                outFile=avgMovieOutDir+'cond'+str(cond)+'_average_movie.mp4'
+                make_movie_from_stack_periodic(avgMovieOutDir,frameArrayAvg,stimFreq,frameRate=frameRate,movFile=outFile)
+            else:
+                 #RESHAPE
+                nPix,nPts=np.shape(frameArrayGroupedAvg)
+                frameArrayGroupedAvg=np.reshape(frameArrayGroupedAvg,(szY,szX,nPts))
+
+                #NORMALIZE ARRAY
+                frameArrayGroupedAvg=normalize_stack(frameArrayGroupedAvg)
+
+                #MAKE MOVIE
+                outFile='%scond%s_average_%sPeriods_movie.mp4'%(avgMovieOutDir,str(cond),str(groupPeriods))
+                make_movie_from_stack(avgMovieOutDir,frameArrayGroupedAvg,frameRate=frameRate,movFile=outFile)
+                
+                del frameArrayGroupedAvg
+                
 
         del frameArrayAvg
     
 def analyze_periodic_data_from_timecourse(sourceRoot, targetRoot, sessID, runList, stimFreq, frameRate, \
-    interp=False, removeRollingMean=False, \
-    motionCorrection=False, averageFrames=None,loadCorrectedFrames=True,saveImages=True,mask=None,\
+    interp=False, excludeEdges=False, removeRollingMean=False, \
+    motionCorrection=False, averageFrames=None,saveImages=True,mask=None,\
     stimType=None):
 
     
     analysisRoot=targetRoot+'/Sessions/'+sessID+'/Analyses/';
-    analysisDir=get_analysis_path_timecourse(analysisRoot, interp, removeRollingMean, \
+    analysisDir=get_analysis_path_timecourse(analysisRoot, interp, excludeEdges, removeRollingMean, \
     motionCorrection,averageFrames)
 
     # DEFINE DIRECTORIES
@@ -5703,12 +6203,13 @@ def analyze_periodic_data_from_timecourse(sourceRoot, targetRoot, sessID, runLis
     motionDir=targetRoot+'/Sessions/'+sessID+'/Motion/'
     motionFileDir=motionDir+'Registration/'
 
+    analysisDir=analysisDir+'phaseDecoding/'
     fileOutDir=analysisDir+'SingleConditionData/Files/'
     if not os.path.exists(fileOutDir):
         os.makedirs(fileOutDir)
 
     if saveImages:
-        figOutDirRoot=analysisDir+'SingleConditionData/Figures/phaseData/'
+        figOutDirRoot=analysisDir+'SingleConditionData/Figures/'
 
       #  OUTPUT TEXT FILE WITH PACKAGE VERSION
     outFile=fileOutDir+'analysis_version_info.txt'
@@ -5736,7 +6237,10 @@ def analyze_periodic_data_from_timecourse(sourceRoot, targetRoot, sessID, runLis
         frameTimes=f['frameTimes']
         szY=f['szY']
         szX=f['szX']
-
+        meanPixelValue=f['meanPixelValue']
+        groupPeriods=f['groupPeriods']
+        if groupPeriods is not None:
+            frameArrayGrouped=f['frameArrayGroupedAvg']
 
 
         #Get FFT
@@ -5769,6 +6273,15 @@ def analyze_periodic_data_from_timecourse(sourceRoot, targetRoot, sessID, runLis
             freqTextFile = open(outFile, 'w+')
         freqTextFile.write('COND '+str(cond)+' '+str(np.around(freqs[freqIdx],4))+' Hz\n')
 
+        #GET PERCENT SIGNAL MODULATION
+        meanPixelValue=np.expand_dims(meanPixelValue,1)
+        meanPixelValue=np.tile(meanPixelValue,(1,frameArray.shape[1]))
+        frameArrayPSC=np.true_divide(frameArray,meanPixelValue)*100
+        if groupPeriods is not None:
+            meanPixelValue=meanPixelValue[:,0:frameArrayGrouped.shape[1]]
+            frameArrayGroupedPSC=np.true_divide(frameArrayGrouped,meanPixelValue)*100
+
+
         if saveImages:
             
             maxModIdx=np.argmax(magData[:,freqIdx],0)
@@ -5778,6 +6291,9 @@ def analyze_periodic_data_from_timecourse(sourceRoot, targetRoot, sessID, runLis
             fig.suptitle(sessID+' cond '+str(int(cond))+' magnitude', fontsize=20)
             plt.xlabel('Frequency (Hz)',fontsize=16)
             plt.ylabel('Magnitude',fontsize=16)
+            axes = plt.gca()
+            ymin, ymax = axes.get_ylim()
+            plt.axvline(x=freqs[freqIdx], ymin=ymin, ymax = ymax, linewidth=1, color='r')
             plt.savefig(outFile)
             plt.close()
             
@@ -5787,6 +6303,9 @@ def analyze_periodic_data_from_timecourse(sourceRoot, targetRoot, sessID, runLis
             fig.suptitle(sessID+' cond '+str(int(cond))+' magnitude', fontsize=20)
             plt.xlabel('Frequency (Hz)',fontsize=16)
             plt.ylabel('Magnitude',fontsize=16)
+            axes = plt.gca()
+            ymin, ymax = axes.get_ylim()
+            plt.axvline(x=freqs[freqIdx], ymin=ymin, ymax = ymax, linewidth=1, color='r')
             plt.savefig(outFile)
             plt.close()
 
@@ -5796,16 +6315,41 @@ def analyze_periodic_data_from_timecourse(sourceRoot, targetRoot, sessID, runLis
 
             outFile = figOutDir+sessID+'_cond'+str(int(cond))+'_timecourse.png'
             fig=plt.figure()
-            plt.plot(frameTimes,frameArray[maxModIdx,])
+            plt.plot(frameTimes,frameArrayPSC[maxModIdx,])
             fig.suptitle(sessID+' cond '+str(int(cond))+' phase'+str(np.round(np.rad2deg(phaseData[maxModIdx,freqIdx]))), fontsize=10)
             plt.xlabel('Time (s)',fontsize=16)
-            plt.ylabel('Pixel Value',fontsize=16)
+            plt.ylabel('Signal Change (%)',fontsize=16)
             axes = plt.gca()
             ymin, ymax = axes.get_ylim()
-            for f in periodStartFrames:
-                plt.axvline(x=frameTimes[f], ymin=ymin, ymax = ymax, linewidth=1, color='k')
+            if interp:
+                for f in periodStartFrames:
+                    plt.axvline(x=frameTimes[f], ymin=ymin, ymax = ymax, linewidth=1, color='k')
+            else:
+                for f in periodStartFrames:
+                    plt.axvline(x=frameTimes[f], ymin=ymin, ymax = ymax, linewidth=1, color='k')
+            axes.set_xlim([frameTimes[0],frameTimes[-1]])
             plt.savefig(outFile)
             plt.close()
+
+            if groupPeriods is not None:
+                periodStartFramesGrouped=periodStartFrames[0:groupPeriods]
+                outFile = figOutDir+sessID+'_cond'+str(int(cond))+'_timecourse_grouped.png'
+                fig=plt.figure()
+                plt.plot(frameTimes[0:frameArrayGroupedPSC.shape[1]],frameArrayGroupedPSC[maxModIdx,])
+                fig.suptitle(sessID+' cond '+str(int(cond))+' phase'+str(np.round(np.rad2deg(phaseData[maxModIdx,freqIdx]))), fontsize=10)
+                plt.xlabel('Time (s)',fontsize=16)
+                plt.ylabel('Signal Change (%)',fontsize=16)
+                axes = plt.gca()
+                ymin, ymax = axes.get_ylim()
+                if interp:
+                    for f in periodStartFramesGrouped:
+                        plt.axvline(x=frameTimes[f], ymin=ymin, ymax = ymax, linewidth=1, color='k')
+                else:
+                    for f in periodStartFramesGrouped:
+                        plt.axvline(x=frameTimes[f], ymin=ymin, ymax = ymax, linewidth=1, color='k')
+                axes.set_xlim([frameTimes[0],frameTimes[frameArrayGroupedPSC.shape[1]]])
+                plt.savefig(outFile)
+                plt.close()
 
 
 
@@ -5814,24 +6358,112 @@ def analyze_periodic_data_from_timecourse(sourceRoot, targetRoot, sessID, runLis
         phaseArray=phaseData[:,freqIdx]
         phaseMap=np.reshape(phaseArray,(szY,szX))
 
-
         #set phase map range for visualization
         phaseMapDisplay=np.copy(phaseMap)
         phaseMapDisplay[phaseMap<0]=-phaseMap[phaseMap<0]
         phaseMapDisplay[phaseMap>0]=(2*np.pi)-phaseMap[phaseMap>0]
 
 
+        #get various measures of data quality
+        #1) magnitude and ratio of magnitude
         tmp=np.copy(magData)
         np.delete(tmp,freqIdx,1)
-        magRatio=magArray/np.sum(tmp,1)
+        nonTargetMagArray=np.sum(tmp,1)
+        magRatio=magArray/nonTargetMagArray
         magRatioMap=np.reshape(magRatio,(szY,szX))
+        nonTargetMagMap=np.reshape(nonTargetMagArray,(szY,szX))
+
+        #2) amplitude and variance expained
+        t=frameTimes*(2*np.pi)*stimFreq
+        t=np.transpose(np.expand_dims(t,1))
+        tMatrix=np.tile(t,(phaseData.shape[0],1))
+
+        phi=np.expand_dims(phaseArray,1)
+        phiMatrix=np.tile(phi,(1,frameArray.shape[1]))
+        Xmatrix=np.cos(tMatrix+phiMatrix)
+
+        betaArray=np.zeros((frameArray.shape[0]))
+        varExpArray=np.zeros((frameArray.shape[0]))
+
+        for pix in range(frameArray.shape[0]):
+            x=np.expand_dims(Xmatrix[pix,:],1)
+            y=frameArrayPSC[pix,:]
+            beta=np.matmul(np.linalg.pinv(x),y)
+            betaArray[pix]=beta
+            yHat=x*beta
+            if pix == maxModIdx:
+                signalFit=yHat
+            SSreg=np.sum((yHat-np.mean(y,0))**2)
+            SStotal=np.sum((y-np.mean(y,0))**2)
+            varExpArray[pix]=SSreg/SStotal
+
+        betaMap=np.reshape(betaArray,(szY,szX))
+        varExpMap=np.reshape(varExpArray,(szY,szX))
 
         outFile=fileOutDir+sessID+'_cond'+str(int(cond))+'_maps'
-        np.savez(outFile,phaseMap=phaseMap,magMap=magMap,magRatioMap=magRatioMap)
+        np.savez(outFile,phaseMap=phaseMap,magMap=magMap,magRatioMap=magRatioMap,\
+             nonTargetMagMap=nonTargetMagMap,betaMap=betaMap,varExpMap=varExpMap)
 
 
 
         if saveImages:
+
+            outFile = figOutDir+sessID+'_cond'+str(int(cond))+'_timecourse_fit.png'
+            fig=plt.figure()
+            plt.plot(frameTimes,frameArrayPSC[maxModIdx,],'b')
+            plt.plot(frameTimes,signalFit,'r')
+            fig.suptitle(sessID+' cond '+str(int(cond))+' phase'+str(np.round(np.rad2deg(phaseData[maxModIdx,freqIdx]))), fontsize=10)
+            plt.xlabel('Time (s)',fontsize=16)
+            plt.ylabel('Signal Change (%)',fontsize=16)
+            axes = plt.gca()
+            ymin, ymax = axes.get_ylim()
+            if interp:
+                for f in periodStartFrames:
+                    plt.axvline(x=frameTimes[f], ymin=ymin, ymax = ymax, linewidth=1, color='k')
+            else:
+                for f in periodStartFrames:
+                    plt.axvline(x=frameTimes[f], ymin=ymin, ymax = ymax, linewidth=1, color='k')
+            axes.set_xlim([frameTimes[0],frameTimes[-1]])
+            plt.savefig(outFile)
+            plt.close()
+
+
+            outFile = outFile = '%s_run%s_%s_Hz_magMap.png'%\
+            (figOutDir+sessID,str(cond),str(np.around(freqs[freqIdx],4)))
+            fig=plt.figure()
+            plt.imshow(magMap)
+            plt.colorbar()#
+            fig.suptitle(sessID+' cond'+str(cond)+' magMap', fontsize=20)
+            plt.savefig(outFile)
+            plt.close()
+
+            outFile = outFile = '%s_run%s_%s_Hz_magRatioMap.png'%\
+            (figOutDir+sessID,str(cond),str(np.around(freqs[freqIdx],4)))
+            fig=plt.figure()
+            plt.imshow(magRatioMap)
+            plt.colorbar()
+            fig.suptitle(sessID+' cond'+str(cond)+' magRatioMap', fontsize=20)
+            plt.savefig(outFile)
+            plt.close()
+
+            outFile = outFile = '%s_run%s_%s_Hz_amplitude.png'%\
+            (figOutDir+sessID,str(cond),str(np.around(freqs[freqIdx],4)))
+            fig=plt.figure()
+            plt.imshow(betaMap)
+            plt.colorbar()#
+            fig.suptitle(sessID+' cond'+str(cond)+' Amiplitude', fontsize=20)
+            plt.savefig(outFile)
+            plt.close()
+
+            outFile = outFile = '%s_run%s_%s_Hz_varianceExplainedMap.png'%\
+            (figOutDir+sessID,str(cond),str(np.around(freqs[freqIdx],4)))
+            fig=plt.figure()
+            plt.imshow(varExpMap)
+            plt.colorbar()#
+            fig.suptitle(sessID+' cond'+str(cond)+' Variance Explained', fontsize=14)
+            plt.savefig(outFile)
+            plt.close()
+
 
             outFile = figOutDir+sessID+'_cond'+str(cond)+'_'+str(np.around(freqs[freqIdx],4))+'Hz_phaseMap.png'
             fig=plt.figure()
@@ -5977,21 +6609,5 @@ def analyze_periodic_data_from_timecourse(sourceRoot, targetRoot, sessID, runLis
                 plt.savefig(outFile)
                 plt.close()
 
-
-            outFile = figOutDir+sessID+'_cond'+str(cond)+'_'+str(np.around(freqs[freqIdx],4))+'Hz_magMap.png'
-            fig=plt.figure()
-            plt.imshow(magMap)
-            plt.colorbar()
-            fig.suptitle(sessID+' cond'+str(cond)+' magMap', fontsize=20)
-            plt.savefig(outFile)
-            plt.close()
-
-            outFile = figOutDir+sessID+'_cond'+str(cond)+'_'+str(np.around(freqs[freqIdx],4))+'Hz_magRatioMap.png'
-            fig=plt.figure()
-            plt.imshow(magRatioMap)
-            plt.colorbar()
-            fig.suptitle(sessID+' cond'+str(cond)+' magRatioMap', fontsize=20)
-            plt.savefig(outFile)
-            plt.close()
     freqTextFile.close()
 
