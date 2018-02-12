@@ -1,3 +1,12 @@
+#!/usr/bin/env python2
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jan 30 2018
+
+@author: cesarechavarria
+"""
+
+
 
 import cv2
 import os
@@ -182,33 +191,33 @@ def get_surface(sourceRoot,targetRoot,sessID):
     outDir=targetRoot+'/Sessions/'+sessID+'/Surface/';
     if not os.path.exists(outDir):
         os.makedirs(outDir) 
-    picList=glob.glob(surfDir+'*.tiff')
-    nPics=len(picList)
+        picList=glob.glob(surfDir+'*.tiff')
+        nPics=len(picList)
 
 
-    # READ IN FRAMES
-    imFile=surfDir+'frame0.tiff'
-    im0=cv2.imread(imFile,-1)
-    sz=im0.shape
-
-    allFrames=np.zeros(sz+(nPics,))
-    allFrames[:,:,0]=im0
-    for pic in range(1,nPics):
-        imFile=surfDir+'frame'+str(pic)+'.tiff'
+        # READ IN FRAMES
+        imFile=surfDir+'frame0.tiff'
         im0=cv2.imread(imFile,-1)
-        allFrames[:,:,pic]=im0
+        sz=im0.shape
 
-    #AVERAGE OVER IMAGES IN FOLDER
-    imAvg=np.mean(allFrames,2)
+        allFrames=np.zeros(sz+(nPics,))
+        allFrames[:,:,0]=im0
+        for pic in range(1,nPics):
+            imFile=surfDir+'frame'+str(pic)+'.tiff'
+            im0=cv2.imread(imFile,-1)
+            allFrames[:,:,pic]=im0
 
-    # #SAVE IMAGE
+        #AVERAGE OVER IMAGES IN FOLDER
+        imAvg=np.mean(allFrames,2)
 
-    outFile=outDir+'frame0.tiff'
-    cv2.imwrite(outFile,np.uint16(imAvg))#THIS FILE MUST BE OPENED WITH CV2 MODULE
+        # #SAVE IMAGE
 
-    outFile=outDir+'16bitSurf.tiff'
-    imAvg=np.true_divide(imAvg,2**12)*(2**16)
-    cv2.imwrite(outFile,np.uint16(imAvg))#THIS FILE MUST BE OPENED WITH CV2 MODULE
+        outFile=outDir+'frame0.tiff'
+        cv2.imwrite(outFile,np.uint16(imAvg))#THIS FILE MUST BE OPENED WITH CV2 MODULE
+
+        outFile=outDir+'16bitSurf.tiff'
+        imAvg=np.true_divide(imAvg,2**12)*(2**16)
+        cv2.imwrite(outFile,np.uint16(imAvg))#THIS FILE MUST BE OPENED WITH CV2 MODULE
 
 def register_surface(sourceRoot,targetRoot,sessID,runList):
     #Cesar Echavarria 1/2017
@@ -1258,6 +1267,7 @@ def average_trials_timecourse(sourceRoot, targetRoot, analysisDir, sessID, nCond
             #if file is too big,save in parts
             nParts=4
             trialsPerPart=np.ceil(np.true_divide(nTrials,nParts))
+            print(trials,trialsPerPart)
             for p in range(nParts):
                 startTrial=p*trialsPerPart
                 if p == nParts-1:
@@ -1622,7 +1632,7 @@ def make_ROI_single_pixel(ROIdir, dataDir, sessID, nPix=100):
 
         
 def plot_ROI_average_timecourse(figOutDir, sessID, ROIlabel, stimRespROI, frameTimes,\
-                                condLabels, stimStartT, stimEndT, percentSignalChange=True):
+                                condLabels, stimStartT, stimEndT, errorRespROI=None, percentSignalChange=True):
     #Cesar Echavarria 11/2016
     
     #GET PARAMETERS FROM DATA STRUCTURE
@@ -1632,6 +1642,10 @@ def plot_ROI_average_timecourse(figOutDir, sessID, ROIlabel, stimRespROI, frameT
     colorList='bgrmkc'
     legHand=[]
     fig=plt.figure()
+    if errorRespROI is not None:
+        for c in range(nCond):
+            plt.fill_between(frameTimes,stimRespROI[c,:]-errorRespROI[c,:],stimRespROI[c,:]+errorRespROI[c,:],color=colorList[c],alpha=0.25)
+
     for c in range(nCond):
         plt.plot(frameTimes,stimRespROI[c,:],colorList[c],linewidth=2)
 
@@ -1687,7 +1701,7 @@ def plot_ROI_trial_timecourse(figFile, ROIlabel, stimRespROI, frameTimes,\
             legHand.append(mlines.Line2D([], [], color=colorList[cond], marker='_',
                                   markersize=15, label=condLabels[cond]))
             condInLegend.append(cond)
-    if nCond>3:
+    if nCond>2:
         plt.legend(handles=legHand,fontsize=8,loc='upper center', bbox_to_anchor=(0.5, 1.05),ncol=3)
     else:
         plt.legend(handles=legHand)
@@ -2525,8 +2539,8 @@ def generate_FDR_map(sourceRoot,sessID,analysisDir,avgFolder, motionCorrection=F
 
         threshMin=np.round(pMin*np.max(np.absolute(FDRmap)))
 
-        if threshMin<1.35:
-            threshMin=1.35
+        if threshMin<0.7:#20%FDR
+            threshMin=0.7
         if threshMin>np.round(pMax*np.max(np.absolute(FDRmap))):
             threshMax=np.ceil(threshMin)
         else:
@@ -3665,7 +3679,7 @@ def show_ROI_session_timecourse(figOutRoot, ROI_label, sessIDlist,stimRespROI,da
         plt.close()  
         
 def plot_ROI_aggregate_tCourse(stimRespROI, frameTimes, stimStartT, stimEndT, listROI, \
-    condLabels, figOutDir, dataExists=None, groupSessions=True, normData=False):
+    condLabels, figOutDir, ROIlabels = None, dataExists=None, groupSessions=True, normData=False):
     if dataExists is None:
         dataExists=np.ones(np.shape(stimRespROI))
     
@@ -3682,15 +3696,20 @@ def plot_ROI_aggregate_tCourse(stimRespROI, frameTimes, stimStartT, stimEndT, li
         
     #GET MEAN ACROSS SESSIONS
     if np.all(dataExists):
+        stimRespROI_error=np.true_divide(np.std(stimRespROI,0,ddof=1),np.sqrt(nSess))
         stimRespROI_mean=np.mean(stimRespROI,0)
     else:
         stimRespROI_mean=np.zeros((nROI,nCond,nPts))
+        stimRespROI_error=np.zeros((nROI,nCond,nPts))
         for r in range(nROI):
             validInd=np.where(dataExists[:,r])[0]
             tmp=stimRespROI[validInd,r,:,:]
             stimRespROI_mean[r,:,:]=np.mean(tmp,0)
+            stimRespROI_error[r,:,:]=np.true_divide(np.std(tmp,0,ddof=1),np.sqrt(np.sum(dataExists[:,r],0)))
 
     for roiCount,roi in enumerate(listROI):
+        if ROIlabels is not None:
+            roi=ROIlabels[roiCount]
         #MAKE PLOT, SESSION-BY-SESSION
         colorList='bgrmkc'
         legHand=[]
@@ -3720,10 +3739,12 @@ def plot_ROI_aggregate_tCourse(stimRespROI, frameTimes, stimStartT, stimEndT, li
             plt.ylabel('Response Magnitude',fontsize=14)
         else:    
             plt.ylabel('PSC',fontsize=14)
+
         if normData:
             figOutFile=figOutDir+roi+'_timecourse_aggregate_normalized.png'
         else:
             figOutFile=figOutDir+roi+'_timecourse_aggregate.png'
+
 
         plt.savefig(figOutFile)
         plt.close()
@@ -3732,6 +3753,8 @@ def plot_ROI_aggregate_tCourse(stimRespROI, frameTimes, stimStartT, stimEndT, li
         colorList='bgrmkc'
         legHand=[]
         fig=plt.figure()
+        for c in range(nCond):
+            plt.fill_between(frameTimes,stimRespROI_mean[roiCount,c,:]-stimRespROI_error[roiCount,c,:],stimRespROI_mean[roiCount,c,:]+stimRespROI_error[roiCount,c,:],color=colorList[c],alpha=0.25)
 
         for c in range(nCond):
             plt.plot(frameTimes,stimRespROI_mean[roiCount,c,:],colorList[c],linewidth=1)
@@ -3767,8 +3790,8 @@ def plot_ROI_aggregate_tCourse(stimRespROI, frameTimes, stimStartT, stimEndT, li
 
 
 
-def ROI_analysis_aggregate_tCourse(targetRoot, analysisPath, nCond, stimDur, avgFolder, \
-                                   aggregateName, sessIDlist, ROIfolder, listROI):
+def ROI_analysis_aggregate_tCourse(targetRoot, analysisPath, nCond, stimDur, avgFolderList, \
+                                   aggregateName, sessIDlist, ROIfolder, listROI,ROIlabels=None):
 
     #Cesar Echavarria 1/2017
 
@@ -3800,17 +3823,22 @@ def ROI_analysis_aggregate_tCourse(targetRoot, analysisPath, nCond, stimDur, avg
     #GO THROUGH EACH SESSION
     for sessCount,sessID in enumerate(sessIDlist):
 
+        if isinstance(avgFolderList,list):
+            avgFolder=avgFolderList[sessCount]
+        else:
+            avgFolder=avgFolderList
 
         #DEFINE SOME DIRECTORIES
         analysisDir=targetRoot+'/Sessions/'+sessID+analysisPath
         ROI_analysisFolder=analysisDir+'/ROIanalysis/'+avgFolder+'/'+ROIfolder+'/'
         fileInDir=ROI_analysisFolder+'/timecourse_average/Files/'
 
-
         #GET ROI DATA
         for roiCount,roi in enumerate(listROI):
             inFile=fileInDir+roi+'.npz'
+
             if os.path.isfile(inFile):
+
                 dataExists[sessCount,roiCount]=True
                 f=np.load(inFile)
                 stimResp=f['stimRespROI']
@@ -3843,12 +3871,15 @@ def ROI_analysis_aggregate_tCourse(targetRoot, analysisPath, nCond, stimDur, avg
     sessIDTextFile.close()
 
     plot_ROI_aggregate_tCourse(stimRespAll, frameTimes, stimStartT, stimEndT, listROI, condLabels,\
-        figOutDir_plots, dataExists, normData=False)
+        figOutDir_plots, ROIlabels,dataExists, normData=False)
     plot_ROI_aggregate_tCourse(stimRespAll, frameTimes, stimStartT, stimEndT, listROI, condLabels, \
-        figOutDir_plots, dataExists, normData=True)
+        figOutDir_plots, ROIlabels,dataExists, normData=True)
     
     for r in range(len(listROI)):
-        ROI_label=listROI[r]
+        if ROIlabels is None:
+            ROI_label=listROI[r]
+        else:
+            ROI_label=ROIlabels[r]
         show_ROI_session_timecourse(figOutDir_imgs, ROI_label, sessIDlist, np.squeeze(stimRespAll[:,r,:,:]),dataExists[:,r], frameTimes,\
                               condLabels, stimStartT, stimStartT+stimDur)
         show_ROI_session_timecourse(figOutDir_imgs, ROI_label, sessIDlist, np.squeeze(stimRespAll[:,r,:,:]),dataExists[:,r], frameTimes,\
@@ -3944,7 +3975,7 @@ def show_ROI_pixel_timecourse(figOutRoot, ROI_label, stimRespROI, frameTimes,\
         plt.close()  
 
 def plot_ROI_timecourse(sourceRoot,targetRoot, sessID, motionCorrection, analysisDir, stimDur,avgFolder, \
-                                ROIfolder, listROI,plotMode='Average',subsetSize=10,\
+                                ROIfolder, listROI,ROIlabels=None,plotMode='Average',subsetSize=10,\
                                 average_conditions=False,average_name=None,newCond=None,condLabels=None):
 
     #Cesar Echavarria 1/2017
@@ -4000,57 +4031,32 @@ def plot_ROI_timecourse(sourceRoot,targetRoot, sessID, motionCorrection, analysi
     sampRate=np.true_divide(1,frameRate)
 
 
-    if plotMode=='Average':
-        #LOAD IN TIME COURSE DATA
-        inFile=inDir+sessID+'_timecourse_trialAvg.npz'
-        f=np.load(inFile)
-        stimRespMean=f['stimRespMean']
 
-
-        #GET SOME INFO ABOUT DATA
-        nPix,nCond,respPts=np.shape(stimRespMean)
-        frameTimes=np.linspace(startT,startT+(respPts)*sampRate,respPts)
-        if average_conditions:
-            allNewCond=np.sort(np.unique(newCond))
-            nCond=np.size(allNewCond)
-            stimRespMeanTmp=np.zeros((nPix,nCond,respPts))
-            for newC in allNewCond:                
-                condInd=np.where(newCond==newC)[0]
-                if np.size(condInd)>1:
-                    stimRespMeanTmp[:,newC-1,:]=np.mean(stimRespMean[:,condInd,:],1)
-                else:
-                    stimRespMeanTmp[:,newC-1,:]=stimRespMean[:,condInd,:]
-            stimRespMean=stimRespMeanTmp
-            del stimRespMeanTmp
+    #LOAD IN TIME COURSE DATA
+    responseAll=np.zeros((nPix,nCond,nTrials,respPts))
+    for cond in range(nCond):
+        inFile=inDir+sessID+'_'+str(cond)+'_timecourse_allTrials.npz'
+        if os.path.isfile(inFile):
+            f=np.load(inFile)
+            responseAll[:,cond,:,:]=f['responseAll']
         else:
-            condLabels=contrast_dictionary_to_labels(targetRoot,nCond)
+            #LOAD BY PARTS
+            inFile=glob.glob(inDir+sessID+'_'+str(cond)+'_timecourse_allTrials_part1*')[0]
+            f=np.load(inFile)
+            tmp=f['responseAll']
+            startTrial=f['startTrial']
+            endTrial=f['endTrial']
+            nParts=f['nParts']
 
-    elif plotMode=='All' or plotMode=='Subset':
-        #LOAD IN TIME COURSE DATA
-        responseAll=np.zeros((nPix,nCond,nTrials,respPts))
-        for cond in range(nCond):
-            inFile=inDir+sessID+'_'+str(cond)+'_timecourse_allTrials.npz'
-            if os.path.isfile(inFile):
-                f=np.load(inFile)
-                responseAll[:,cond,:,:]=f['responseAll']
-            else:
-                #LOAD BY PARTS
-                inFile=glob.glob(inDir+sessID+'_'+str(cond)+'_timecourse_allTrials_part1*')[0]
+            responseAll[:,cond,startTrial:endTrial,:]=tmp
+
+            for p in range(1,nParts):
+                inFile=glob.glob(inDir+sessID+'_'+str(cond)+'_timecourse_allTrials_part'+str(p+1)+'*')[0]
                 f=np.load(inFile)
                 tmp=f['responseAll']
                 startTrial=f['startTrial']
                 endTrial=f['endTrial']
-                nParts=f['nParts']
-
                 responseAll[:,cond,startTrial:endTrial,:]=tmp
-
-                for p in range(1,nParts):
-                    inFile=glob.glob(inDir+sessID+'_'+str(cond)+'_timecourse_allTrials_part'+str(p+1)+'*')[0]
-                    f=np.load(inFile)
-                    tmp=f['responseAll']
-                    startTrial=f['startTrial']
-                    endTrial=f['endTrial']
-                    responseAll[:,cond,startTrial:endTrial,:]=tmp
 
 
 
@@ -4081,7 +4087,7 @@ def plot_ROI_timecourse(sourceRoot,targetRoot, sessID, motionCorrection, analysi
          print('Plotting timecourse for a subset of trials within ROIs....')
 
 
-    for roi in listROI:
+    for roiCount,roi in enumerate(listROI):
         print(roi)
         # load file and variables
         inFile=ROIdir+'/Files/'+roi+'.npz'
@@ -4117,29 +4123,37 @@ def plot_ROI_timecourse(sourceRoot,targetRoot, sessID, motionCorrection, analysi
         #convert to linear indices
         ROI_ind=np.ravel_multi_index(ROI_ind,(szY,szX))    
 
-
-        ROI_label=roi
+        if ROIlabels is None:
+            ROI_label=roi
+        else:
+            ROI_label=ROIlabels[roiCount]
         if plotMode=='Average':
             #GET ROI PIXELS
-            stimRespPixels=stimRespMean[ROI_ind,:,:]
+            tmp=np.mean(responseAll,2)
+            stimRespPixels=tmp[ROI_ind,:,:]
+
+            del tmp
 
             #PLOT A SUBSET OF PIXEL TIMECOURSES 
             figOutRoot=figOutDir+sessID
             show_ROI_pixel_timecourse(figOutRoot, ROI_label, stimRespPixels, frameTimes,\
                               condLabels, stimStartT, stimStartT+stimDur)
+
             #AVERAGE ACROSS PIXELS IN ROI
             if np.size(ROI_ind)>1:
-                stimRespROI=np.mean(stimRespPixels,0)
+                stimRespROI=np.mean(responseAll[ROI_ind,:,:,:],0)
             else:
-                stimRespROI=stimRespPixels
-            del stimRespPixels
+                stimRespROI=responseAll[ROI_ind,:,:,:]
 
+            errorRespROI=np.true_divide(np.std(stimRespROI,1,ddof=1),np.sqrt(stimRespROI.shape[1]))#get standard error
+            stimRespROI=np.mean(stimRespROI,1)#average across trials
+            
             #PLOT ROI
             plot_ROI_average_timecourse(figOutDir, sessID, ROI_label, stimRespROI, frameTimes,\
-                                    condLabels, stimStartT, stimStartT+stimDur, percentSignalChange)
+                                    condLabels, stimStartT, stimStartT+stimDur, errorRespROI,percentSignalChange)
 
             #SAVE TIMECOURSE TO FILE
-            outFile=fileOutDir+ROI_label
+            outFile=fileOutDir+roi
             np.savez(outFile,stimRespROI=stimRespROI,frameTimes=frameTimes,condLabels=condLabels,stimStartT=stimStartT,\
                     stimEndT=stimStartT+stimDur)
         elif plotMode=='All':
@@ -4158,7 +4172,7 @@ def plot_ROI_timecourse(sourceRoot,targetRoot, sessID, motionCorrection, analysi
             show_ROI_trial_timecourse(figOutDir+sessID, ROI_label, stimRespROI, frameTimes,\
                                     condLabels, stimStartT, stimStartT+stimDur)
             #SAVE TIMECOURSE TO FILE
-            outFile=fileOutDir+ROI_label
+            outFile=fileOutDir+roi
             np.savez(outFile,stimRespROI=stimRespROI,frameTimes=frameTimes,condLabels=condLabels,stimStartT=stimStartT,\
                     stimEndT=stimStartT+stimDur)
         elif plotMode=='Subset':
@@ -4186,7 +4200,7 @@ def plot_ROI_timecourse(sourceRoot,targetRoot, sessID, motionCorrection, analysi
 
 
 
-def plot_ROI_response_single_subject(figOutDir,sessID,ROIdata,listROI,condLabels,figLabel=None,condOrder=None):
+def plot_ROI_response_single_subject(figOutDir,sessID,ROIdata,listROI,ROIlabels=None,condLabels=None,figLabel=None,condOrder=None):
     #Cesar Echavarria 1/2017
     
     #Get data details
@@ -4236,10 +4250,17 @@ def plot_ROI_response_single_subject(figOutDir,sessID,ROIdata,listROI,condLabels
     plt.ylabel('Signal Change (%)',fontsize=16)
     plt.xlim([np.min(plotLoc)-condGap,np.max(plotLoc)+condGap])
     ax.xaxis.set_ticks(np.mean(plotLoc,1))
-    if nROI <4:
-        ax.set_xticklabels(listROI,fontsize=14)
+    if ROIlabels is None:
+        if nROI <4:
+            ax.set_xticklabels(listROI,fontsize=14)
+        else:
+            ax.set_xticklabels(listROI,fontsize=10)
     else:
-        ax.set_xticklabels(listROI,fontsize=10)
+        if nROI <4:
+            ax.set_xticklabels(ROIlabels,fontsize=14)
+        else:
+            ax.set_xticklabels(ROIlabels,fontsize=10)
+
 
     axes = plt.gca()
     ymin, ymax = axes.get_ylim()
@@ -4255,7 +4276,7 @@ def plot_ROI_response_single_subject(figOutDir,sessID,ROIdata,listROI,condLabels
     plt.close()
 
 def plot_ROI_tWindow(sourceRoot,targetRoot, sessID, motionCorrection, analysisDir, avgFolder, \
-                     ROIfolder, listROI, \
+                     ROIfolder, listROI, ROIlabels=None, \
                      average_conditions=False,average_name=None,newCond=None,condLabels=None,\
                      figLabel=None,condOrder=None):
 
@@ -4367,7 +4388,7 @@ def plot_ROI_tWindow(sourceRoot,targetRoot, sessID, motionCorrection, analysisDi
 
 
     print('Plotting ROI response....')
-    plot_ROI_response_single_subject(figOutDir,sessID,ROIdata,listROI,condLabels,figLabel,condOrder)
+    plot_ROI_response_single_subject(figOutDir,sessID,ROIdata,listROI,ROIlabels,condLabels,figLabel,condOrder)
 
 
     #SAVE DATA FOR EACH ROI
@@ -4380,121 +4401,121 @@ def plot_ROI_tWindow(sourceRoot,targetRoot, sessID, motionCorrection, analysisDi
         count=count+1
 
 
-def plot_ROI_aggregate_tCourse(stimRespROI, frameTimes, stimStartT, stimEndT, listROI, \
-    condLabels, figOutDir, dataExists=None, groupSessions=True, normData=False):
-    if dataExists is None:
-        dataExists=np.ones(np.shape(stimRespROI))
+# def plot_ROI_aggregate_tCourse(stimRespROI, frameTimes, stimStartT, stimEndT, listROI, \
+#     # condLabels, figOutDir, dataExists=None, groupSessions=True, normData=False):
+#     # if dataExists is None:
+#     #     dataExists=np.ones(np.shape(stimRespROI))
     
-    nSess,nROI,nCond,nPts=np.shape(stimRespROI)
-    #NORMALIZE DATA
-    if normData:
-        tmpResp=np.zeros(np.shape(stimRespROI))
-        for s in range(nSess):
-            validInd=np.where(dataExists[s,:])[0]
-            tmp=stimRespROI[s,validInd,:,:]
-            tmpResp[s,validInd,:,:]=np.true_divide(tmp,np.max(tmp))
-        stimRespROI=tmpResp
-        del tmpResp
+    # nSess,nROI,nCond,nPts=np.shape(stimRespROI)
+    # #NORMALIZE DATA
+    # if normData:
+    #     tmpResp=np.zeros(np.shape(stimRespROI))
+    #     for s in range(nSess):
+    #         validInd=np.where(dataExists[s,:])[0]
+    #         tmp=stimRespROI[s,validInd,:,:]
+    #         tmpResp[s,validInd,:,:]=np.true_divide(tmp,np.max(tmp))
+    #     stimRespROI=tmpResp
+    #     del tmpResp
         
-    #GET MEAN ACROSS SESSIONS
-    if np.all(dataExists):
-        stimRespROI_mean=np.mean(stimRespROI,0)
-    else:
-        stimRespROI_mean=np.zeros((nROI,nCond,nPts))
-        for r in range(nROI):
-            validInd=np.where(dataExists[:,r])[0]
-            tmp=stimRespROI[validInd,r,:,:]
-            stimRespROI_mean[r,:,:]=np.mean(tmp,0)
+    # #GET MEAN ACROSS SESSIONS
+    # if np.all(dataExists):
+    #     stimRespROI_mean=np.mean(stimRespROI,0)
+    # else:
+    #     stimRespROI_mean=np.zeros((nROI,nCond,nPts))
+    #     for r in range(nROI):
+    #         validInd=np.where(dataExists[:,r])[0]
+    #         tmp=stimRespROI[validInd,r,:,:]
+    #         stimRespROI_mean[r,:,:]=np.mean(tmp,0)
 
-    for roiCount,roi in enumerate(listROI):
-        #MAKE PLOT, SESSION-BY-SESSION
-        colorList='bgrmkc'
-        legHand=[]
-        fig=plt.figure()
-        print(roi)
-        for s in range(nSess):
-            for c in range(nCond):
-                if dataExists[s,roiCount]:
-                    plt.plot(frameTimes,stimRespROI[s,roiCount,c,:],colorList[c],linewidth=1)
-                    if s==0:
-                        legHand.append(mlines.Line2D([], [], color=colorList[c], marker='_',
-                                              markersize=10, label=condLabels[c]))
-        plt.legend(handles=legHand)
+    # for roiCount,roi in enumerate(listROI):
+    #     #MAKE PLOT, SESSION-BY-SESSION
+    #     colorList='bgrmkc'
+    #     legHand=[]
+    #     fig=plt.figure()
+    #     print(roi)
+    #     for s in range(nSess):
+    #         for c in range(nCond):
+    #             if dataExists[s,roiCount]:
+    #                 plt.plot(frameTimes,stimRespROI[s,roiCount,c,:],colorList[c],linewidth=1)
+    #                 if s==0:
+    #                     legHand.append(mlines.Line2D([], [], color=colorList[c], marker='_',
+    #                                           markersize=10, label=condLabels[c]))
+    #     plt.legend(handles=legHand)
 
-        axes = plt.gca()
-        ymin, ymax = axes.get_ylim()
-        if normData:
-            ymax=1
-        plt.axvline(x=stimStartT, ymin=ymin, ymax = ymax, linewidth=1, color='k')
-        plt.axvline(x=stimEndT, ymin=ymin, ymax = ymax, linewidth=1, color='r')
-        if ymin<=0:
-            xmin, xmax = axes.get_xlim()
-            plt.axhline(xmin=xmin, xmax=xmax , y= 0, linewidth=1, color='k')
+    #     axes = plt.gca()
+    #     ymin, ymax = axes.get_ylim()
+    #     if normData:
+    #         ymax=1
+    #     plt.axvline(x=stimStartT, ymin=ymin, ymax = ymax, linewidth=1, color='k')
+    #     plt.axvline(x=stimEndT, ymin=ymin, ymax = ymax, linewidth=1, color='r')
+    #     if ymin<=0:
+    #         xmin, xmax = axes.get_xlim()
+    #         plt.axhline(xmin=xmin, xmax=xmax , y= 0, linewidth=1, color='k')
 
-        fig.suptitle(roi+' Response', fontsize=14)
-        plt.xlabel('Time (secs)',fontsize=14)
-        if normData:
-            plt.ylabel('Response Magnitude',fontsize=14)
-        else:    
-            plt.ylabel('PSC',fontsize=14)
-        if normData:
-            figOutFile=figOutDir+roi+'_timecourse_aggregate_normalized.png'
-        else:
-            figOutFile=figOutDir+roi+'_timecourse_aggregate.png'
+    #     fig.suptitle(roi+' Response', fontsize=14)
+    #     plt.xlabel('Time (secs)',fontsize=14)
+    #     if normData:
+    #         plt.ylabel('Response Magnitude',fontsize=14)
+    #     else:    
+    #         plt.ylabel('PSC',fontsize=14)
+    #     if normData:
+    #         figOutFile=figOutDir+roi+'_timecourse_aggregate_normalized.png'
+    #     else:
+    #         figOutFile=figOutDir+roi+'_timecourse_aggregate.png'
 
-        plt.savefig(figOutFile)
-        plt.close()
+    #     plt.savefig(figOutFile)
+    #     plt.close()
 
-        #MAKE PLOT; MEAN
-        colorList='bgrmkc'
-        legHand=[]
-        fig=plt.figure()
+    #     #MAKE PLOT; MEAN
+    #     colorList='bgrmkc'
+    #     legHand=[]
+    #     fig=plt.figure()
 
-        for c in range(nCond):
-            plt.plot(frameTimes,stimRespROI_mean[roiCount,c,:],colorList[c],linewidth=1)
+    #     for c in range(nCond):
+    #         plt.plot(frameTimes,stimRespROI_mean[roiCount,c,:],colorList[c],linewidth=1)
 
-            legHand.append(mlines.Line2D([], [], color=colorList[c], marker='_',
-                                  markersize=10, label=condLabels[c]))
-        plt.legend(handles=legHand)
+    #         legHand.append(mlines.Line2D([], [], color=colorList[c], marker='_',
+    #                               markersize=10, label=condLabels[c]))
+    #     plt.legend(handles=legHand)
 
-        axes = plt.gca()
-        if nCond>3:
-            plt.legend(handles=legHand,fontsize=8,loc='upper center', bbox_to_anchor=(0.5, 1.05),ncol=3)
-        else:
-            plt.legend(handles=legHand)
+    #     axes = plt.gca()
+    #     if nCond>3:
+    #         plt.legend(handles=legHand,fontsize=8,loc='upper center', bbox_to_anchor=(0.5, 1.05),ncol=3)
+    #     else:
+    #         plt.legend(handles=legHand)
 
-        axes = plt.gca()
-        ymin, ymax = axes.get_ylim()
-        if normData:
-            ymax=1
+    #     axes = plt.gca()
+    #     ymin, ymax = axes.get_ylim()
+    #     if normData:
+    #         ymax=1
 
-        if nCond>3:
-            axes.set_ylim(ymin,ymax+(.2*ymax))
-            ymin, ymax = axes.get_ylim()
-        plt.axvline(x=stimStartT, ymin=ymin, ymax = ymax, linewidth=1, color='k')
-        plt.axvline(x=stimEndT, ymin=ymin, ymax = ymax, linewidth=1, color='r')
-        if ymin<=0:
-            xmin, xmax = axes.get_xlim()
-            plt.axhline(xmin=xmin, xmax=xmax , y= 0, linewidth=1, color='k')
+    #     if nCond>3:
+    #         axes.set_ylim(ymin,ymax+(.2*ymax))
+    #         ymin, ymax = axes.get_ylim()
+    #     plt.axvline(x=stimStartT, ymin=ymin, ymax = ymax, linewidth=1, color='k')
+    #     plt.axvline(x=stimEndT, ymin=ymin, ymax = ymax, linewidth=1, color='r')
+    #     if ymin<=0:
+    #         xmin, xmax = axes.get_xlim()
+    #         plt.axhline(xmin=xmin, xmax=xmax , y= 0, linewidth=1, color='k')
 
-        fig.suptitle(roi+' Mean Response', fontsize=14)
-        plt.xlabel('Time (secs)',fontsize=14)
-        if normData:
-            plt.ylabel('Response Magnitude',fontsize=14)
-        else:    
-            plt.ylabel('PSC',fontsize=14)
+    #     fig.suptitle(roi+' Mean Response', fontsize=14)
+    #     plt.xlabel('Time (secs)',fontsize=14)
+    #     if normData:
+    #         plt.ylabel('Response Magnitude',fontsize=14)
+    #     else:    
+    #         plt.ylabel('PSC',fontsize=14)
 
-        if normData:
-            figOutFile=figOutDir+roi+'_timecourse_mean_normalized.png'
-        else:
-            figOutFile=figOutDir+roi+'_timecourse_mean.png'
+    #     if normData:
+    #         figOutFile=figOutDir+roi+'_timecourse_mean_normalized.png'
+    #     else:
+    #         figOutFile=figOutDir+roi+'_timecourse_mean.png'
 
-        plt.savefig(figOutFile)
-        plt.close()
+    #     plt.savefig(figOutFile)
+    #     plt.close()
 
 
 
-def plot_ROI_aggregate_tWindow(ROIdata, figOutFile, listROI, condLabels, dataExists=None, \
+def plot_ROI_aggregate_tWindow(ROIdata, figOutFile, listROI, condLabels, ROIlabels=None,dataExists=None, \
                                groupSessions=True, normSess=False, normROI=False,condOrder=None):
 
     if dataExists is None:
@@ -4584,10 +4605,16 @@ def plot_ROI_aggregate_tWindow(ROIdata, figOutFile, listROI, condLabels, dataExi
     plt.xlim([np.min(plotLoc)-condGap,np.max(plotLoc)+condGap])
 #     plt.xlim([np.min(plotLoc)-condGap,np.max(plotLoc)+(nCond*condGap)+ROIgap])
     ax.xaxis.set_ticks(np.mean(plotLoc,1))
-    if nROI <4:
-        ax.set_xticklabels(listROI,fontsize=14)
+    if ROIlabels is None:
+        if nROI <4:
+            ax.set_xticklabels(listROI,fontsize=14)
+        else:
+            ax.set_xticklabels(listROI,fontsize=10)
     else:
-        ax.set_xticklabels(listROI,fontsize=10)
+        if nROI <4:
+            ax.set_xticklabels(ROIlabels,fontsize=14)
+        else:
+            ax.set_xticklabels(ROIlabels,fontsize=10)
     axes = plt.gca()
     ymin, ymax = axes.get_ylim()
     if ymin<=0:
@@ -4598,8 +4625,8 @@ def plot_ROI_aggregate_tWindow(ROIdata, figOutFile, listROI, condLabels, dataExi
     plt.savefig(figOutFile)
     plt.close()
     
-def ROI_analysis_aggregate_tWindow(targetRoot, analysisPath, nCond,avgFolder,\
-                                   aggregateName, sessIDlist, ROIfolder, listROI, makeFigures=True,\
+def ROI_analysis_aggregate_tWindow(targetRoot, analysisPath, nCond,avgFolderList,\
+                                   aggregateName, sessIDlist, ROIfolder, listROI, ROIlabels=None,makeFigures=True,\
                                    condOrder=None):
 
     #Cesar Echavarria 1/2017
@@ -4630,6 +4657,11 @@ def ROI_analysis_aggregate_tWindow(targetRoot, analysisPath, nCond,avgFolder,\
 
     #GO THROUGH EACH SESSION
     for sessCount,sessID in enumerate(sessIDlist):
+
+        if isinstance(avgFolderList,list):
+            avgFolder=avgFolderList[sessCount]
+        else:
+            avgFolder=avgFolderList
 
 
         #DEFINE SOME DIRECTORIES
@@ -4666,13 +4698,13 @@ def ROI_analysis_aggregate_tWindow(targetRoot, analysisPath, nCond,avgFolder,\
     #OUT FIGURES
     if makeFigures:
         figOutFile=figOutDir+'PSC_Aggregate.png'
-        plot_ROI_aggregate_tWindow(ROIdataAll, figOutFile, listROI, condLabels, dataExists,\
+        plot_ROI_aggregate_tWindow(ROIdataAll, figOutFile, listROI, condLabels, ROIlabels, dataExists,\
                                    groupSessions=True,condOrder=condOrder)
         figOutFile=figOutDir+'PSC_Aggregate_NormSess.png'
-        plot_ROI_aggregate_tWindow(ROIdataAll, figOutFile, listROI, condLabels,\
+        plot_ROI_aggregate_tWindow(ROIdataAll, figOutFile, listROI, condLabels, ROIlabels,\
                                    dataExists, groupSessions=True, normSess=True,condOrder=condOrder)
         figOutFile=figOutDir+'PSC_Aggregate_NormROI.png'
-        plot_ROI_aggregate_tWindow(ROIdataAll, figOutFile, listROI, condLabels,\
+        plot_ROI_aggregate_tWindow(ROIdataAll, figOutFile, listROI, condLabels, ROIlabels,\
                                    dataExists, groupSessions=True, normROI=True,condOrder=condOrder)
 # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 
@@ -6476,7 +6508,7 @@ def analyze_periodic_data_from_timecourse(sourceRoot, targetRoot, sessID, runLis
             #load surface for overlay
             #READ IN SURFACE
             imFile=anatSource+'frame0_registered.tiff'
-            if not os.path.isfile(inFile):
+            if not os.path.isfile(imFile):
                 imFile=anatSource+'frame0.tiff'
 
             imSurf=cv2.imread(imFile,-1)
